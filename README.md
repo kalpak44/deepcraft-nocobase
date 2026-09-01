@@ -29,15 +29,16 @@ default**. Cloudflare WARP puts your machine on that network — after step 3 be
 
 ### 1. Install the tools
 
-```bash
-# macOS
-brew install just ansible
-brew install --cask cloudflare-warp
+Install `just` itself (`brew install just` on macOS, `sudo apt install just` on
+Ubuntu), then let it do the rest:
 
-# Ubuntu
-sudo apt install -y just ansible netcat-openbsd
-# WARP is installed for you by `just warp`
+```bash
+just install-cli-tools
 ```
+
+That installs ansible, the Cloudflare WARP client and the small CLI bits, on both
+macOS and Ubuntu. On macOS the WARP step asks for your admin password; if you skip
+it, everything else still works on the home LAN.
 
 ### 2. Configure
 
@@ -57,8 +58,8 @@ is pre-filled. `.env` is gitignored.
 2. Team name: **`proud-block-d46f`**
 3. Sign in, then check the menu-bar icon shows **Connected**
 
-**Ubuntu** — `just warp` does it for you, using the two `CF_WARP_*` values in
-`.env`.
+**Ubuntu** — `just connect-warp` does it for you, using the two `CF_WARP_*` values
+in `.env`.
 
 Only `192.168.1.5` is routed over WARP. The rest of your traffic and the rest of
 the home network are untouched.
@@ -95,23 +96,24 @@ all good
 
 | Command | Does |
 |---|---|
+| `just help` | show all of this |
+| `just install-cli-tools` | install ansible + WARP (once per machine) |
 | `just check` | verify tools, key and connectivity — start here |
-| `just ssh` | shell on the box; connects WARP first |
-| `just apply` | deploy the ansible playbook; connects WARP first |
-| `just warp` | connect the WARP client on its own |
-| `just ssh-key` | write the deploy key to disk |
-| `just list` | show all of this |
+| `just connect-ssh` | shell on the box; connects WARP first |
+| `just deploy-ansible` | run the playbook; connects WARP first |
+| `just connect-warp` | join the Zero Trust network on its own |
+| `just write-ssh-key` | write the deploy key to disk |
 
-Add `--lan` to `ssh` or `apply` when you're on the home network and want to skip
-WARP entirely:
+Add `--lan` to `connect-ssh` or `deploy-ansible` when you're on the home network
+and want to skip WARP entirely:
 
 ```bash
-just ssh --lan
-just apply --lan
+just connect-ssh --lan
+just deploy-ansible --lan
 ```
 
-`just ssh` handles the key, port and user for you. The raw equivalent on the LAN
-is `ssh -p 22022 root@192.168.1.5`.
+`just connect-ssh` handles the key, port and user for you. The raw equivalent on
+the LAN is `ssh -p 22022 root@192.168.1.5`.
 
 ---
 
@@ -124,8 +126,8 @@ the Actions tab.
 GitHub runner → WARP → Cloudflare → tunnel → 192.168.1.5:22022
 ```
 
-CI runs `just deploy`, which is the same recipe as `just apply` — so what you run
-locally is what CI runs.
+CI runs `just install-cli-tools` then `just deploy-ansible` — the same commands
+you run locally.
 
 ## Point your own domain at it
 

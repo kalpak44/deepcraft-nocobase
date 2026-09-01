@@ -1,8 +1,8 @@
 name: Deploy
 
-# The box sits on a home LAN with no WAN port open. `just deploy` joins the Zero
-# Trust network first, then runs ansible over SSH. All the logic lives in the
-# Justfile so it can be run identically by hand.
+# The box sits on a home LAN with no WAN port open. `just deploy-ansible` joins
+# the Zero Trust network first, then runs ansible over SSH. All the logic lives
+# in the Justfile, so CI runs exactly what a developer runs.
 on:
   workflow_dispatch:
   push:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v2
-      - run: pipx install --include-deps ansible-core
-      - run: just deploy
+      - run: just install-cli-tools
+      - run: just deploy-ansible
       - if: failure()
-        run: just doctor
+        run: just check
