@@ -4,6 +4,7 @@
 # `just deploy`, which connects WARP first.
 #
 # Usage:
+#   just check       # verify tools, key and connectivity - run this first
 #   just apply       # WARP + ssh key + ansible   (alias: just deploy)
 #   just apply --lan # same, minus WARP — on the home LAN
 #   just ssh         # WARP + shell on the box     (also takes --lan)
@@ -23,6 +24,10 @@
 #   CF_WARP_CLIENT_SECRET      service token client secret (Linux warp only)
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+# Loads .env from this directory, so a dev copies .env.example once and every
+# recipe works with no exports. CI passes the same names as job env vars.
+set dotenv-load := true
 
 key_file := "$HOME/.ssh/nocobase_ed25519"
 host     := env_var_or_default("NOCOBASE_HOST", "192.168.1.5")
@@ -170,28 +175,85 @@ ssh mode="": ssh-key
     [ "{{mode}}" = "--lan" ] || just warp
     exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}"
 
-# Print WARP and connectivity state — run this first when a deploy fails.
-doctor:
+# Check everything needed to reach the box: tools, config, key, connectivity.
+check:
     #!/usr/bin/env bash
-    set +e
-    echo "os      : {{os()}}"
-    echo "target  : {{user}}@{{host}}:{{port}}"
-    echo "--- warp"
-    if command -v warp-cli >/dev/null 2>&1; then
-      warp-cli --accept-tos status 2>/dev/null || warp-cli status 2>&1
+    # Deliberately no `set -e`: report every problem in one pass, not just the first.
+    fail=0
+    ok()   { printf "  [ok]   %s\n" "$1"; }
+    bad()  { printf "  [FAIL] %s\n" "$1"; fail=1; }
+    warn() { printf "  [warn] %s\n" "$1"; }
+
+    echo "tools"
+    for t in ssh ssh-keygen nc curl; do
+      command -v "$t" >/dev/null 2>&1 && ok "$t" || bad "$t is missing"
+    done
+    if command -v ansible-playbook >/dev/null 2>&1; then ok "ansible-playbook"
+    else bad "ansible-playbook missing - pipx install --include-deps ansible-core"; fi
+    if command -v warp-cli >/dev/null 2>&1; then ok "warp-cli"
+    else warn "warp-cli not installed - only needed off the home LAN"; fi
+
+    echo "config"
+    ok "target {{user}}@{{host}}:{{port}}"
+
+    echo "key"
+    keyfile=""
+    if [ -n "${NOCOBASE_SSH_PRIVATE_KEY:-}" ]; then
+      tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+      if printf '%s' "$NOCOBASE_SSH_PRIVATE_KEY" | grep -q 'BEGIN .*PRIVATE KEY'; then
+        printf '%s\n' "$NOCOBASE_SSH_PRIVATE_KEY" > "$tmp"
+      else
+        printf '%s' "$NOCOBASE_SSH_PRIVATE_KEY" | { base64 -d 2>/dev/null || base64 -D; } > "$tmp" 2>/dev/null
+      fi
+      chmod 600 "$tmp"
+      if ssh-keygen -y -f "$tmp" >/dev/null 2>&1; then
+        ok "NOCOBASE_SSH_PRIVATE_KEY parses ($(ssh-keygen -lf "$tmp" | awk '{print $2}'))"
+        keyfile="$tmp"
+      else
+        bad "NOCOBASE_SSH_PRIVATE_KEY is set but does not parse as a private key"
+      fi
+    elif [ -f "{{key_file}}" ]; then
+      warn "NOCOBASE_SSH_PRIVATE_KEY unset - falling back to {{key_file}}"
+      keyfile="{{key_file}}"
     else
-      echo "warp-cli not installed (fine on the home LAN)"
+      bad "no key: set NOCOBASE_SSH_PRIVATE_KEY (see .env.example) or run 'just ssh-key'"
     fi
-    echo "--- ssh port"
-    nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null \
-      && echo "reachable" || echo "NOT reachable"
-    echo "--- public url"
-    curl -s -o /dev/null -w "https://deepcraft-nocobase.pavel-usanli.online -> HTTP %{http_code}\n" \
-      --max-time 15 https://deepcraft-nocobase.pavel-usanli.online/
+
+    echo "network"
+    if command -v warp-cli >/dev/null 2>&1; then
+      st="$(warp-cli --accept-tos status 2>/dev/null || warp-cli status 2>&1)"
+      case "$st" in *Connected*) ok "WARP connected" ;; *) warn "WARP not connected - fine on the LAN, else run 'just warp'" ;; esac
+    fi
+    if nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
+      ok "tcp {{host}}:{{port}} open"
+      if [ -n "$keyfile" ]; then
+        if ssh -i "$keyfile" -p "{{port}}" -o IdentitiesOnly=yes -o BatchMode=yes \
+             -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+             "{{user}}@{{host}}" true 2>/dev/null; then
+          ok "ssh auth as {{user}}"
+        else
+          bad "tcp works but ssh auth failed - wrong key?"
+        fi
+      fi
+    else
+      bad "cannot reach {{host}}:{{port}} - run 'just warp' if you are off the LAN"
+    fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://deepcraft-nocobase.pavel-usanli.online/ 2>/dev/null)"
+    [ "$code" = "200" ] && ok "public url returns 200" || warn "public url returned ${code:-no response}"
+
+    echo
+    [ "$fail" -eq 0 ] && echo "all good" || echo "some checks failed (above)"
+    exit "$fail"
+
+# Alias kept because CI and older notes call `just doctor`.
+alias doctor := check
 
 list:
+    @echo "check           verify tools, key and connectivity - run this first"
     @echo "apply [--lan]   WARP + ssh key + ansible   (alias: deploy)"
     @echo "ssh   [--lan]   WARP + shell on the box"
     @echo "warp            connect the WARP client"
     @echo "ssh-key         write the deploy key to {{key_file}}"
-    @echo "doctor          print WARP + connectivity state"
+    @echo
+    @echo "add --lan to ssh/apply on the home LAN to skip WARP"
+    @echo "config comes from .env - see .env.example"

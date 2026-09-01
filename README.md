@@ -9,7 +9,8 @@ Deploys to `nocobase-lxc`, hardened by
 |---|---|
 | `ansible/` | all ansible scripts |
 | `.github/workflows/deploy.yml` | github pipeline, deploys on push to main |
-| `Justfile` | the deploy commands — CI runs the same ones |
+| `Justfile` | every command below — CI runs the same ones |
+| `.env.example` | copy to `.env` and fill in |
 
 ## Access
 
@@ -17,6 +18,102 @@ Deploys to `nocobase-lxc`, hardened by
 |---|---|
 | Internet | <https://deepcraft-nocobase.pavel-usanli.online> |
 | Home LAN | <http://192.168.1.5/> |
+
+---
+
+## Getting set up
+
+The box lives on a home network and is **not reachable from the internet by
+default**. Cloudflare WARP puts your machine on that network — after step 3 below,
+`192.168.1.5` works from anywhere.
+
+### 1. Install the tools
+
+```bash
+# macOS
+brew install just ansible
+brew install --cask cloudflare-warp
+
+# Ubuntu
+sudo apt install -y just ansible netcat-openbsd
+# WARP is installed for you by `just warp`
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+```
+
+Fill in `NOCOBASE_SSH_PRIVATE_KEY` — ask an admin, or from a `homelab-infra`
+checkout run `just output proxmox nocobase-lxc ssh_private_key`. Everything else
+is pre-filled. `.env` is gitignored.
+
+### 3. Join the network (skip if you're on the home LAN)
+
+**macOS** — open the Cloudflare WARP app:
+
+1. **Preferences → Account → Login with Cloudflare Zero Trust**
+2. Team name: **`proud-block-d46f`**
+3. Sign in, then check the menu-bar icon shows **Connected**
+
+**Ubuntu** — `just warp` does it for you, using the two `CF_WARP_*` values in
+`.env`.
+
+Only `192.168.1.5` is routed over WARP. The rest of your traffic and the rest of
+the home network are untouched.
+
+### 4. Check it works
+
+```bash
+just check
+```
+
+Verifies your tools, your key, WARP, the SSH connection and the public URL, and
+tells you which one is broken. **Run this first whenever something misbehaves.**
+
+```
+tools
+  [ok]   ssh
+  [ok]   ansible-playbook
+  [warn] warp-cli not installed - only needed off the home LAN
+config
+  [ok]   target root@192.168.1.5:22022
+key
+  [ok]   NOCOBASE_SSH_PRIVATE_KEY parses (SHA256:wjtw...)
+network
+  [ok]   tcp 192.168.1.5:22022 open
+  [ok]   ssh auth as root
+  [ok]   public url returns 200
+
+all good
+```
+
+---
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `just check` | verify tools, key and connectivity — start here |
+| `just ssh` | shell on the box; connects WARP first |
+| `just apply` | deploy the ansible playbook; connects WARP first |
+| `just warp` | connect the WARP client on its own |
+| `just ssh-key` | write the deploy key to disk |
+| `just list` | show all of this |
+
+Add `--lan` to `ssh` or `apply` when you're on the home network and want to skip
+WARP entirely:
+
+```bash
+just ssh --lan
+just apply --lan
+```
+
+`just ssh` handles the key, port and user for you. The raw equivalent on the LAN
+is `ssh -p 22022 root@192.168.1.5`.
+
+---
 
 ## Deploying
 
@@ -27,42 +124,8 @@ the Actions tab.
 GitHub runner → WARP → Cloudflare → tunnel → 192.168.1.5:22022
 ```
 
-Run it yourself:
-
-```bash
-export NOCOBASE_HOST=192.168.1.5 NOCOBASE_SSH_PORT=22022 NOCOBASE_SSH_USER=root
-export NOCOBASE_SSH_PRIVATE_KEY="$(cat /path/to/id_ed25519)"
-
-just apply         # connects WARP, then deploys
-just apply --lan   # on the home LAN, skips WARP
-just ssh           # connects WARP, then opens a shell
-just doctor        # when something breaks
-```
-
-`just list` shows everything. The deploy key comes from `homelab-infra` —
-`just output proxmox nocobase-lxc ssh_private_key`.
-
-## SSH access
-
-```bash
-just ssh          # from anywhere — brings up WARP first
-just ssh --lan    # on the home LAN
-```
-
-`just ssh` handles the key, port and user for you. The raw equivalent on the LAN is
-`ssh -p 22022 root@192.168.1.5`.
-
-From outside the home network the WARP client must be installed once, because
-`192.168.1.5` is not routable from the internet:
-
-1. Install [Cloudflare WARP](https://one.one.one.one/) — or `brew install --cask cloudflare-warp` on macOS.
-2. Open it, go to **Preferences → Account → Login with Cloudflare Zero Trust**.
-3. Enter the team name: **`proud-block-d46f`**
-4. Sign in, then confirm the menu-bar icon shows **Connected**.
-5. `just ssh` now works from anywhere.
-
-Only `192.168.1.5` is routed over WARP — the rest of the home network stays on
-your normal connection.
+CI runs `just deploy`, which is the same recipe as `just apply` — so what you run
+locally is what CI runs.
 
 ## Point your own domain at it
 
@@ -82,6 +145,8 @@ hostname automatically.
 > `SSL and Certificates` permission first.
 
 ## Repository secrets
+
+CI reads the same names as `.env`:
 
 | Name | For |
 |---|---|
