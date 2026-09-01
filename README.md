@@ -17,7 +17,7 @@ Deploys to `nocobase-lxc`, hardened by
 | | |
 |---|---|
 | Internet | no hostname of its own — reachable only through an onboarded customer domain, see [Point your own domain at it](#point-your-own-domain-at-it) |
-| Home LAN | <http://192.168.1.5/> |
+| LAN | <http://192.168.1.5/> |
 
 ---
 
