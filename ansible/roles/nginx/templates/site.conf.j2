@@ -1,0 +1,13 @@
+# Managed by ansible/roles/nginx — edits on the host are overwritten.
+server {
+    listen {{ nginx_port }} default_server;
+    listen [::]:{{ nginx_port }} default_server;
+
+    server_name {{ nginx_server_name }};
+    root {{ nginx_root }};
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

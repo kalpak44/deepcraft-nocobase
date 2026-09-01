@@ -1,0 +1,74 @@
+---
+# The container reaches the internet freely (only LAN egress is firewalled), so
+# apt works normally. Note the image ships wget but not curl.
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create document root
+  ansible.builtin.file:
+    path: "{{ nginx_root }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Deploy index page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "{{ nginx_root }}/index.html"
+    owner: www-data
+    group: www-data
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Deploy site config
+  ansible.builtin.template:
+    src: site.conf.j2
+    dest: /etc/nginx/sites-available/nocobase.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Enable the site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/nocobase.conf
+    dest: /etc/nginx/sites-enabled/nocobase.conf
+    state: link
+  notify: Reload nginx
+
+# Ubuntu ships a default site that also binds :80. Left in place it wins on
+# server_name matching for some requests and makes the deploy look like a no-op.
+- name: Remove the distro default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: Validate the nginx config before any reload
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Ensure nginx is running and enabled
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Apply pending reloads now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify nginx answers on port {{ nginx_port }}
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ nginx_port }}/"
+    return_content: true
+    status_code: 200
+  register: _nginx_check
+
+- name: Show what was served
+  ansible.builtin.debug:
+    msg: "nginx on {{ ansible_host }}:{{ nginx_port }} returned {{ _nginx_check.status }}"

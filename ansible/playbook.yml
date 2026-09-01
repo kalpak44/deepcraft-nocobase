@@ -1,0 +1,8 @@
+---
+- name: Deploy nginx to nocobase
+  hosts: nocobase
+  become: true
+  gather_facts: true
+
+  roles:
+    - nginx

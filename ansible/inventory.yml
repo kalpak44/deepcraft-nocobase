@@ -1,0 +1,14 @@
+---
+# Connection details come from the environment so nothing about the host is
+# committed here. The workflow exports them from repo secrets; locally, export
+# them yourself before running ansible-playbook.
+#
+#   NOCOBASE_HOST      192.168.1.5   (reachable only over WARP, or from the LAN)
+#   NOCOBASE_SSH_PORT  22022         (not 22 — the box is hardened)
+#   NOCOBASE_SSH_USER  root
+all:
+  hosts:
+    nocobase:
+      ansible_host: "{{ lookup('env', 'NOCOBASE_HOST') }}"
+      ansible_port: "{{ lookup('env', 'NOCOBASE_SSH_PORT') | default(22022, true) }}"
+      ansible_user: "{{ lookup('env', 'NOCOBASE_SSH_USER') | default('root', true) }}"

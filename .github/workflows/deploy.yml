@@ -1,0 +1,125 @@
+name: Deploy
+
+# The target (192.168.1.5) sits on a home LAN with no WAN ports open. The runner
+# reaches it by enrolling into the Zero Trust org with a service token, which
+# makes the 192.168.1.5/32 private network route reachable through the tunnel.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install WARP client
+        run: |
+          set -euo pipefail
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          # The repo does not always carry the newest Ubuntu codename; fall back to
+          # jammy, which the client supports on noble runners.
+          codename="$(lsb_release -cs)"
+          if ! curl -fsI "https://pkg.cloudflareclient.com/dists/${codename}/Release" >/dev/null 2>&1; then
+            echo "no WARP repo for ${codename}, falling back to jammy"
+            codename=jammy
+          fi
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${codename} main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq
+          sudo apt-get install -y cloudflare-warp
+
+      - name: Enrol and connect WARP
+        env:
+          CF_TEAM_NAME: ${{ secrets.CF_TEAM_NAME }}
+          CF_WARP_CLIENT_ID: ${{ secrets.CF_WARP_CLIENT_ID }}
+          CF_WARP_CLIENT_SECRET: ${{ secrets.CF_WARP_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          # Service-token enrolment is driven entirely by mdm.xml. Written with a
+          # restrictive umask because it holds the client secret in cleartext.
+          sudo mkdir -p /var/lib/cloudflare-warp
+          umask 077
+          sudo tee /var/lib/cloudflare-warp/mdm.xml >/dev/null <<XML
+          <dict>
+            <key>organization</key>
+            <string>${CF_TEAM_NAME}</string>
+            <key>auth_client_id</key>
+            <string>${CF_WARP_CLIENT_ID}</string>
+            <key>auth_client_secret</key>
+            <string>${CF_WARP_CLIENT_SECRET}</string>
+            <key>service_mode</key>
+            <string>warp</string>
+          </dict>
+          XML
+          sudo chmod 600 /var/lib/cloudflare-warp/mdm.xml
+          sudo systemctl restart warp-svc
+
+          # Wait for the daemon socket before talking to it; warp-cli against a
+          # not-yet-started warp-svc fails in a way that looks like a bad token.
+          for i in $(seq 1 30); do
+            warp-cli --accept-tos status >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+          warp-cli --accept-tos connect || true
+
+          # "Disconnected" does not contain "Connected" (capital C), so this
+          # substring test is safe.
+          for i in $(seq 1 30); do
+            status="$(warp-cli --accept-tos status 2>&1 || true)"
+            echo "$status"
+            case "$status" in *Connected*) echo "WARP connected"; exit 0 ;; esac
+            sleep 2
+          done
+          echo "::error::WARP did not reach Connected"
+          exit 1
+
+      - name: Confirm the target is reachable
+        env:
+          HOST: ${{ secrets.NOCOBASE_HOST }}
+          PORT: ${{ secrets.NOCOBASE_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          # Fail here rather than inside Ansible: a routing problem and an SSH
+          # problem look identical in an ansible unreachable error.
+          for i in $(seq 1 15); do
+            if nc -z -w5 "$HOST" "$PORT"; then echo "$HOST:$PORT reachable"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::cannot reach $HOST:$PORT over WARP"
+          exit 1
+
+      - name: Write the deploy key
+        env:
+          KEY: ${{ secrets.NOCOBASE_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+      - name: Install Ansible
+        run: pipx install --include-deps ansible-core
+
+      - name: Deploy
+        working-directory: ansible
+        env:
+          NOCOBASE_HOST: ${{ secrets.NOCOBASE_HOST }}
+          NOCOBASE_SSH_PORT: ${{ secrets.NOCOBASE_SSH_PORT }}
+          NOCOBASE_SSH_USER: ${{ secrets.NOCOBASE_SSH_USER }}
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: ansible-playbook playbook.yml --private-key ~/.ssh/id_ed25519
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          warp-cli --accept-tos status || true
+          warp-cli --accept-tos registration show 2>&1 | grep -iv secret || true
+          ip route || true

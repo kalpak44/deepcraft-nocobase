@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+
+# Ansible
+*.retry
+
+# Never commit connection material — it comes from repo secrets at runtime
+*.pem
+id_rsa*
+id_ed25519*
+.env
