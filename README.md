@@ -71,7 +71,8 @@ just check
 ```
 
 Verifies your tools, your key, WARP, the SSH connection and the public URL, and
-tells you which one is broken. **Run this first whenever something misbehaves.**
+tells you which one is broken — including whether you are reaching the box
+**via LAN** or **via WARP**. **Run this first whenever something misbehaves.**
 
 ```
 tools
@@ -83,7 +84,9 @@ config
 key
   [ok]   NOCOBASE_SSH_PRIVATE_KEY parses (SHA256:wjtw...)
 network
-  [ok]   tcp 192.168.1.5:22022 open
+  [ok]   on the home LAN as 192.168.1.217 — WARP optional
+  [warn] WARP not connected (fine, you are on the LAN)
+  [ok]   tcp 192.168.1.5:22022 open (via LAN)
   [ok]   ssh auth as root
   [ok]   public url returns 200
 

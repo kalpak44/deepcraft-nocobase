@@ -143,12 +143,44 @@ check:
     fi
 
     echo "network"
+    # Are we on the home network? ifconfig on macOS, ip on Linux.
+    lan_ip="$( { ifconfig 2>/dev/null; ip -4 addr show 2>/dev/null; } \
+      | sed -nE 's/.*inet (addr:)?(192\.168\.1\.[0-9]+).*/\2/p' | head -1 )"
+    if [ -n "$lan_ip" ]; then
+      on_lan=1; ok "on the home LAN as $lan_ip — WARP optional"
+    else
+      on_lan=0; ok "off the home LAN — reaching the box needs WARP"
+    fi
+
+    warp_up=0
     if command -v warp-cli >/dev/null 2>&1; then
       st="$(warp-cli --accept-tos status 2>/dev/null || warp-cli status 2>&1)"
-      case "$st" in *Connected*) ok "WARP connected" ;; *) warn "WARP not connected - fine on the LAN, else run 'just connect-warp'" ;; esac
+      # "Free" is consumer WARP. It connects happily but is not enrolled in the
+      # Zero Trust org, so it does NOT reach 192.168.1.5 — without this check a
+      # consumer account looks identical to a working one.
+      acct="$(warp-cli registration show 2>/dev/null | sed -nE 's/.*[Aa]ccount type: *//p' | head -1)"
+      case "$st" in
+        *Connected*)
+          if [ -n "$acct" ] && [ "$acct" != "Free" ]; then
+            warp_up=1; ok "WARP connected to Zero Trust ($acct)"
+          elif [ "$on_lan" = 1 ]; then
+            warn "WARP is on the consumer '$acct' account, not your Zero Trust org (fine, you are on the LAN)"
+          else
+            bad "WARP is on the consumer '$acct' account - run 'just connect-warp' to enrol"
+          fi ;;
+        *)
+          if [ "$on_lan" = 1 ]; then warn "WARP not connected (fine, you are on the LAN)"
+          else bad "WARP not connected - run 'just connect-warp'"; fi ;;
+      esac
+    elif [ "$on_lan" != 1 ]; then
+      bad "warp-cli not installed and you are off the LAN - run 'just install-cli-tools'"
     fi
+
     if nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
-      ok "tcp {{host}}:{{port}} open"
+      # The split tunnel routes 192.168.1.5 over WARP whenever WARP is up, even
+      # when you are sitting on the home network.
+      if [ "$warp_up" = 1 ]; then via="via WARP"; else via="via LAN"; fi
+      ok "tcp {{host}}:{{port}} open ($via)"
       if [ -n "$keyfile" ]; then
         if ssh -i "$keyfile" -p "{{port}}" -o IdentitiesOnly=yes -o BatchMode=yes \
              -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
@@ -158,8 +190,10 @@ check:
           bad "tcp works but ssh auth failed - wrong key?"
         fi
       fi
+    elif [ "$on_lan" = 1 ]; then
+      bad "cannot reach {{host}}:{{port}} on the LAN - is the container running?"
     else
-      bad "cannot reach {{host}}:{{port}} - run 'just connect-warp' if you are off the LAN"
+      bad "cannot reach {{host}}:{{port}} - run 'just connect-warp'"
     fi
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://deepcraft-nocobase.pavel-usanli.online/ 2>/dev/null)"
     [ "$code" = "200" ] && ok "public url returns 200" || warn "public url returned ${code:-no response}"
