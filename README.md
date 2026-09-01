@@ -33,9 +33,10 @@ Run it yourself:
 export NOCOBASE_HOST=192.168.1.5 NOCOBASE_SSH_PORT=22022 NOCOBASE_SSH_USER=root
 export NOCOBASE_SSH_PRIVATE_KEY="$(cat /path/to/id_ed25519)"
 
-just apply     # on the home LAN
-just deploy    # off-LAN: connects WARP first
-just doctor    # when something breaks
+just apply         # connects WARP, then deploys
+just apply --lan   # on the home LAN, skips WARP
+just ssh           # connects WARP, then opens a shell
+just doctor        # when something breaks
 ```
 
 `just list` shows everything. The deploy key comes from `homelab-infra` —
@@ -43,20 +44,22 @@ just doctor    # when something breaks
 
 ## SSH access
 
-On the home LAN:
-
 ```bash
-ssh -p 22022 root@192.168.1.5
+just ssh          # from anywhere — brings up WARP first
+just ssh --lan    # on the home LAN
 ```
 
-From anywhere else you need the WARP client, because `192.168.1.5` is not routable
-from the internet:
+`just ssh` handles the key, port and user for you. The raw equivalent on the LAN is
+`ssh -p 22022 root@192.168.1.5`.
+
+From outside the home network the WARP client must be installed once, because
+`192.168.1.5` is not routable from the internet:
 
 1. Install [Cloudflare WARP](https://one.one.one.one/) — or `brew install --cask cloudflare-warp` on macOS.
 2. Open it, go to **Preferences → Account → Login with Cloudflare Zero Trust**.
 3. Enter the team name: **`proud-block-d46f`**
 4. Sign in, then confirm the menu-bar icon shows **Connected**.
-5. `ssh -p 22022 root@192.168.1.5` now works from anywhere.
+5. `just ssh` now works from anywhere.
 
 Only `192.168.1.5` is routed over WARP — the rest of the home network stays on
 your normal connection.

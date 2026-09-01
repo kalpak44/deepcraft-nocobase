@@ -4,11 +4,11 @@
 # `just deploy`, which connects WARP first.
 #
 # Usage:
-#   just deploy      # what CI runs: WARP + ssh key + ansible
-#   just apply       # ansible only — use this on the home LAN
+#   just apply       # WARP + ssh key + ansible   (alias: just deploy)
+#   just apply --lan # same, minus WARP — on the home LAN
+#   just ssh         # WARP + shell on the box     (also takes --lan)
 #   just warp        # connect the WARP client
 #   just ssh-key     # write the deploy key to disk
-#   just ssh         # open a shell on the box
 #   just doctor      # print WARP + connectivity state
 #   just list        # show everything
 #
@@ -32,15 +32,14 @@ user     := env_var_or_default("NOCOBASE_SSH_USER", "root")
 _help:
     @just --list
 
-# Everything CI needs, in order.
-deploy: warp apply
+# CI calls `just deploy`; it is the same thing as `just apply`.
+alias deploy := apply
 
-# Connect the WARP client (skipped if the box is already reachable).
-#
-# Linux enrols headlessly with the service token; macOS is a GUI login, so there
-# it checks and instructs rather than automating.
+# Connect the WARP client — skipped when the box is already reachable.
 warp:
     #!/usr/bin/env bash
+    # Linux enrols headlessly with the service token; macOS is a GUI login, so
+    # there this checks and instructs rather than automating.
     set -euo pipefail
 
     # BSD and GNU netcat both accept -z -w; present on stock macOS and Ubuntu.
@@ -136,9 +135,7 @@ ssh-key:
     ssh-keygen -y -f "{{key_file}}" >/dev/null
     echo "wrote {{key_file}}"
 
-# Check the box answers before ansible does.
-#
-# Keeps a routing failure and an SSH failure from looking identical.
+# Check the box answers, so routing and SSH failures stay distinguishable.
 reachable:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -151,18 +148,27 @@ reachable:
     echo "cannot reach {{host}}:{{port}} — try 'just warp' or 'just doctor'" >&2
     exit 1
 
-# Run the playbook.
-apply: ssh-key reachable
+# Run the playbook — connects WARP first, or pass --lan to skip it.
+apply mode="": ssh-key
     #!/usr/bin/env bash
+    # just apply        from anywhere
+    # just apply --lan  on the home LAN, never touches WARP
     set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just warp
+    just reachable
     cd ansible
     NOCOBASE_HOST="{{host}}" NOCOBASE_SSH_PORT="{{port}}" NOCOBASE_SSH_USER="{{user}}" \
     ANSIBLE_HOST_KEY_CHECKING=False \
       ansible-playbook playbook.yml --private-key "{{key_file}}"
 
-# Open a shell on the box.
-ssh: ssh-key
-    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}"
+# Shell on the box — connects WARP, then ssh with the right key, port and user.
+ssh mode="": ssh-key
+    #!/usr/bin/env bash
+    # just ssh        from anywhere
+    # just ssh --lan  on the home LAN, never touches WARP
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just warp
+    exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}"
 
 # Print WARP and connectivity state — run this first when a deploy fails.
 doctor:
@@ -184,9 +190,8 @@ doctor:
       --max-time 15 https://deepcraft-nocobase.pavel-usanli.online/
 
 list:
-    @echo "deploy    WARP + ssh key + ansible (what CI runs)"
-    @echo "apply     ansible only - use on the home LAN"
-    @echo "warp      connect the WARP client"
-    @echo "ssh-key   write the deploy key to {{key_file}}"
-    @echo "ssh       open a shell on the box"
-    @echo "doctor    print WARP + connectivity state"
+    @echo "apply [--lan]   WARP + ssh key + ansible   (alias: deploy)"
+    @echo "ssh   [--lan]   WARP + shell on the box"
+    @echo "warp            connect the WARP client"
+    @echo "ssh-key         write the deploy key to {{key_file}}"
+    @echo "doctor          print WARP + connectivity state"
