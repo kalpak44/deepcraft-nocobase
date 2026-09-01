@@ -1,0 +1,150 @@
+---
+# Installed from the official nodejs.org tarball rather than apt or NodeSource.
+# "Latest LTS" is a moving target that only nodejs.org can answer, Ubuntu's own
+# nodejs package is years behind, and the tarball is checksum-verified without
+# trusting a third-party apt repo and its signing key. The container reaches the
+# internet freely (only LAN egress is firewalled), so the fetch works normally.
+
+- name: Install the unpack prerequisites
+  ansible.builtin.apt:
+    name:
+      - xz-utils # the releases are .tar.xz and the image ships gzip only
+      - ca-certificates
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Map the machine architecture onto node's release naming
+  vars:
+    _arch_map:
+      x86_64: x64
+      aarch64: arm64
+      arm64: arm64
+      armv7l: armv7l
+  ansible.builtin.set_fact:
+    _node_arch: "{{ _arch_map[ansible_architecture] | default('', true) }}"
+
+# Not left to fail on its own further down: an unmapped architecture otherwise
+# surfaces as a bare Jinja "dict has no attribute" on the fact above, or worse as
+# a 404 on the download. Guessing is the one thing that must not happen — a wrong
+# tarball unpacks cleanly and only dies at exec time.
+- name: Refuse to guess an unmapped architecture
+  ansible.builtin.assert:
+    that: _node_arch | length > 0
+    fail_msg: "no node download mapped for ansible_architecture={{ ansible_architecture }}"
+
+- name: Fetch the release index from nodejs.org
+  ansible.builtin.uri:
+    url: https://nodejs.org/dist/index.json
+    return_content: true
+  register: _node_index
+  when: nodejs_version | length == 0
+  check_mode: false
+
+- name: Resolve the newest LTS version
+  vars:
+    # index.json is ordered newest-first, and each entry's `lts` key is false for
+    # a non-LTS line and the codename string for an LTS one — so the first truthy
+    # entry is the newest LTS, optionally narrowed to one line.
+    _lts_versions: "{{ _node_index.json | selectattr('lts') | map(attribute='version') | list }}"
+    _line_re: "{{ '^v' ~ nodejs_lts_line ~ '\\.' if nodejs_lts_line | length > 0 else '^v' }}"
+  ansible.builtin.set_fact:
+    _node_version: "{{ _lts_versions | select('match', _line_re) | first | regex_replace('^v', '') }}"
+  when: nodejs_version | length == 0
+
+- name: Use the pinned version instead
+  ansible.builtin.set_fact:
+    _node_version: "{{ nodejs_version }}"
+  when: nodejs_version | length > 0
+
+- name: Read the version already installed
+  ansible.builtin.command: "{{ nodejs_bin_dir }}/node --version"
+  register: _node_installed
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether anything needs downloading
+  ansible.builtin.set_fact:
+    _node_needed: "{{ (_node_installed.stdout | default('', true) | trim) != 'v' ~ _node_version }}"
+
+- name: Report the decision
+  ansible.builtin.debug:
+    msg: >-
+      installed={{ _node_installed.stdout | default('none', true) | trim | default('none', true) }}
+      target=v{{ _node_version }}
+      {{ '→ installing' if _node_needed else '→ already current' }}
+
+- name: Download the tarball and its checksum file
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ _node_version }}/{{ item }}"
+    dest: "/tmp/{{ item }}"
+    mode: "0644"
+  loop:
+    - "node-v{{ _node_version }}-linux-{{ _node_arch }}.tar.xz"
+    - SHASUMS256.txt
+  when: _node_needed
+
+# Without this the role would happily unpack a truncated or tampered download.
+# grep narrows SHASUMS256.txt to our one file, because `sha256sum -c` on the
+# whole list fails on the dozens of files we did not fetch.
+- name: Verify the tarball against SHASUMS256.txt
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      grep " node-v{{ _node_version }}-linux-{{ _node_arch }}.tar.xz$" SHASUMS256.txt | sha256sum -c -
+    chdir: /tmp
+    executable: /bin/bash
+  changed_when: false
+  when: _node_needed
+
+- name: Create the version directory
+  ansible.builtin.file:
+    path: "{{ nodejs_prefix }}/v{{ _node_version }}"
+    state: directory
+    mode: "0755"
+  when: _node_needed
+
+- name: Unpack node
+  ansible.builtin.unarchive:
+    src: "/tmp/node-v{{ _node_version }}-linux-{{ _node_arch }}.tar.xz"
+    dest: "{{ nodejs_prefix }}/v{{ _node_version }}"
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    creates: "{{ nodejs_prefix }}/v{{ _node_version }}/bin/node"
+  when: _node_needed
+
+# Deliberately not guarded by _node_needed. Versions are installed side by side
+# and this symlink is the only thing that selects one, so changing the pin back
+# to an already-present version has to repoint it — and it is cheap either way.
+- name: Point `current` at this version
+  ansible.builtin.file:
+    src: "{{ nodejs_prefix }}/v{{ _node_version }}"
+    dest: "{{ nodejs_prefix }}/current"
+    state: link
+
+- name: Link the binaries onto PATH
+  ansible.builtin.file:
+    src: "{{ nodejs_prefix }}/current/bin/{{ item }}"
+    dest: "{{ nodejs_bin_dir }}/{{ item }}"
+    state: link
+  loop: "{{ nodejs_binaries }}"
+
+- name: Remove the downloads
+  ansible.builtin.file:
+    path: "/tmp/{{ item }}"
+    state: absent
+  loop:
+    - "node-v{{ _node_version }}-linux-{{ _node_arch }}.tar.xz"
+    - SHASUMS256.txt
+  when: _node_needed
+
+- name: Verify every binary actually runs
+  ansible.builtin.command: "{{ nodejs_bin_dir }}/{{ item }} --version"
+  register: _node_check
+  changed_when: false
+  loop: "{{ nodejs_binaries }}"
+
+- name: Show what is installed
+  ansible.builtin.debug:
+    msg: "{{ _node_check.results | map(attribute='item') | zip(_node_check.results | map(attribute='stdout')) | map('join', ' ') | list }}"

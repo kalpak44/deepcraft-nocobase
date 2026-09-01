@@ -1,8 +1,11 @@
 ---
-- name: Deploy nginx to nocobase
+- name: Configure nocobase
   hosts: nocobase
   become: true
+  # gather_facts is required, not merely convenient: the nodejs role picks its
+  # download from ansible_architecture.
   gather_facts: true
 
   roles:
     - nginx
+    - nodejs

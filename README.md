@@ -172,6 +172,11 @@ GitHub runner → WARP → Cloudflare → tunnel → 192.168.1.5:22022
 CI runs `just install-cli-tools` then `just deploy-ansible` — the same commands
 you run locally.
 
+The playbook installs nginx and the current Node.js LTS, resolved from
+`nodejs.org` at run time and checksum-verified. Node 26 becomes LTS in October
+2026, so set `nodejs_lts_line: "24"` in `ansible/roles/nodejs/defaults/main.yml`
+if you would rather not cross that boundary automatically.
+
 ## Point your own domain at it
 
 Your domain stays with your current DNS provider. Subdomains only, not the apex.

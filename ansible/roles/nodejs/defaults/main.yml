@@ -1,0 +1,18 @@
+---
+# Empty means "whatever nodejs.org says the newest LTS is at run time", which is
+# the whole point of the role. Two escape hatches:
+#
+#   nodejs_version: "24.20.0"   pin exactly, ignore the index entirely
+#   nodejs_lts_line: "24"       track patches, but never cross an LTS line
+#
+# The second matters more than it looks: Node 26 becomes LTS in October 2026, and
+# with both left empty the next deploy after that date moves 24 → 26 on its own.
+nodejs_version: ""
+nodejs_lts_line: ""
+
+nodejs_prefix: /usr/local/lib/nodejs
+nodejs_bin_dir: /usr/local/bin
+nodejs_binaries:
+  - node
+  - npm
+  - npx
