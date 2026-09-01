@@ -23,7 +23,7 @@ Deploys to `nocobase-lxc`, hardened by
 
 ## Getting set up
 
-The box lives on a home network and is **not reachable from the internet by
+The box lives on a private network and is **not reachable from the internet by
 default**. Cloudflare WARP puts your machine on that network — after step 3 below,
 `192.168.1.5` works from anywhere.
 
