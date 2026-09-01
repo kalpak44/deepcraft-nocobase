@@ -52,11 +52,19 @@ is pre-filled. `.env` is gitignored.
 
 ### 3. Join the network (skip if you're on the home LAN)
 
-**macOS** — open the Cloudflare WARP app:
+**macOS** — `just connect-warp` enrols you and opens a browser to sign in. To do it
+by hand instead:
 
-1. **Preferences → Account → Login with Cloudflare Zero Trust**
-2. Team name: **`proud-block-d46f`**
-3. Sign in, then check the menu-bar icon shows **Connected**
+```bash
+warp-cli registration new proud-block-d46f
+warp-cli connect
+```
+
+Or through the app: **Preferences → Account → Login with Cloudflare Zero Trust**,
+team name **`proud-block-d46f`**.
+
+If the device is already on the consumer "Free" account, drop that first with
+`warp-cli registration delete` — `just connect-warp` does this for you.
 
 **Ubuntu** — `just connect-warp` does it for you, using the two `CF_WARP_*` values
 in `.env`.

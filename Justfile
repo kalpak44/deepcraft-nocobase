@@ -34,7 +34,7 @@ help:
     @echo "  just deploy-ansible --lan"
     @echo ""
     @echo "extras"
-    @echo "  just connect-warp          join the Zero Trust network on its own"
+    @echo "  just connect-warp          join the Zero Trust network (--force to re-enrol)"
     @echo "  just write-ssh-key         write the deploy key to {{key_file}}"
     @echo ""
     @echo "config comes from .env — copy .env.example to get started"
@@ -202,14 +202,14 @@ check:
     [ "$fail" -eq 0 ] && echo "all good" || echo "some checks failed (above)"
     exit "$fail"
 
-# Join the Zero Trust network — skipped when the box is already reachable.
-connect-warp:
+# Join the Zero Trust network — add --force to enrol even when already reachable.
+connect-warp mode="":
     #!/usr/bin/env bash
     set -euo pipefail
 
     # BSD and GNU netcat both accept -z -w; present on stock macOS and Ubuntu.
-    if nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
-      echo "{{host}}:{{port}} already reachable — WARP not needed"
+    if [ "{{mode}}" != "--force" ] && nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
+      echo "{{host}}:{{port}} already reachable — WARP not needed (use --force to enrol anyway)"
       exit 0
     fi
 
@@ -222,9 +222,18 @@ connect-warp:
     warp_cli() { warp-cli --accept-tos "$@" 2>/dev/null || warp-cli "$@"; }
 
     if [ "{{os()}}" = "macos" ]; then
-      # teams-enroll opens a browser for the SSO login. Older builds lack the
-      # subcommand, in which case the GUI hint at the end of this recipe applies.
-      warp_cli teams-enroll "${CF_TEAM_NAME}" 2>/dev/null || true
+      # A device already registered to the consumer "Free" account cannot join an
+      # organisation until that registration is dropped.
+      acct="$(warp_cli registration show 2>/dev/null | sed -nE 's/.*[Aa]ccount type: *//p' | head -1)"
+      if [ "$acct" = "Free" ]; then
+        echo "dropping the consumer WARP registration so this device can join ${CF_TEAM_NAME}"
+        warp_cli registration delete >/dev/null 2>&1 || true
+      fi
+      # `registration new <ORG>` on current builds; `teams-enroll` on older ones.
+      # Both open a browser for the SSO login.
+      warp_cli registration new "${CF_TEAM_NAME}" 2>/dev/null \
+        || warp_cli teams-enroll "${CF_TEAM_NAME}" 2>/dev/null \
+        || true
       warp_cli connect 2>/dev/null || true
     else
       # Headless enrolment is driven entirely by mdm.xml.
