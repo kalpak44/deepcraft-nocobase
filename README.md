@@ -143,18 +143,3 @@ hostname automatically.
 
 > Not enabled yet — the Cloudflare API token in `homelab-infra` needs the
 > `SSL and Certificates` permission first.
-
-## Repository secrets
-
-CI reads the same names as `.env`:
-
-| Name | For |
-|---|---|
-| `NOCOBASE_HOST`, `NOCOBASE_SSH_PORT`, `NOCOBASE_SSH_USER` | where to connect |
-| `NOCOBASE_SSH_PRIVATE_KEY` | deploy key |
-| `CF_TEAM_NAME`, `CF_WARP_CLIENT_ID`, `CF_WARP_CLIENT_SECRET` | joins the runner to the network |
-| `POSTGRES_HOST`, `POSTGRES_PORT` | `192.168.1.4`, `5432` |
-| `REDIS_HOST`, `REDIS_PORT` | `192.168.1.6`, `6379` |
-
-Postgres and Redis are host and port only — credentials live in the homelab's
-Vault. Both are reachable from the container, not from CI.
