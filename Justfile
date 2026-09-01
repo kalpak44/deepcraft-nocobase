@@ -176,7 +176,8 @@ check:
       bad "warp-cli not installed and you are off the LAN - run 'just install-cli-tools'"
     fi
 
-    if nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
+    if [ "{{os()}}" = "macos" ]; then nc_t=(-G 5 -w 5); else nc_t=(-w 5); fi
+    if nc -z "${nc_t[@]}" "{{host}}" "{{port}}" 2>/dev/null; then
       # The split tunnel routes 192.168.1.5 over WARP whenever WARP is up, even
       # when you are sitting on the home network.
       if [ "$warp_up" = 1 ]; then via="via WARP"; else via="via LAN"; fi
@@ -195,8 +196,6 @@ check:
     else
       bad "cannot reach {{host}}:{{port}} - run 'just connect-warp'"
     fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://deepcraft-nocobase.pavel-usanli.online/ 2>/dev/null)"
-    [ "$code" = "200" ] && ok "public url returns 200" || warn "public url returned ${code:-no response}"
 
     echo ""
     [ "$fail" -eq 0 ] && echo "all good" || echo "some checks failed (above)"
@@ -207,8 +206,12 @@ connect-warp mode="":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # BSD and GNU netcat both accept -z -w; present on stock macOS and Ubuntu.
-    if [ "{{mode}}" != "--force" ] && nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
+    # macOS BSD nc applies -w only to idle/read timeouts, NOT to the TCP connect —
+    # a blackholed route then blocks for the OS default of ~75s. -G bounds the
+    # connect itself, and only exists on BSD nc, so it is keyed off the OS.
+    if [ "{{os()}}" = "macos" ]; then nc_t=(-G 5 -w 5); else nc_t=(-w 5); fi
+
+    if [ "{{mode}}" != "--force" ] && nc -z "${nc_t[@]}" "{{host}}" "{{port}}" 2>/dev/null; then
       echo "{{host}}:{{port}} already reachable — WARP not needed (use --force to enrol anyway)"
       exit 0
     fi
@@ -221,24 +224,28 @@ connect-warp mode="":
     # --accept-tos is required on Linux and rejected by some macOS builds.
     warp_cli() { warp-cli --accept-tos "$@" 2>/dev/null || warp-cli "$@"; }
 
+    : "${CF_TEAM_NAME:?set CF_TEAM_NAME in .env}"
+    : "${CF_WARP_CLIENT_ID:?set CF_WARP_CLIENT_ID in .env}"
+    : "${CF_WARP_CLIENT_SECRET:?set CF_WARP_CLIENT_SECRET in .env}"
+
+    # Identical enrolment on both systems — the service token from .env, exactly
+    # what CI uses. No browser, no email, no identity provider. Only the config
+    # location and the reload mechanism differ.
     if [ "{{os()}}" = "macos" ]; then
-      # A device already registered to the consumer "Free" account cannot join an
-      # organisation until that registration is dropped.
-      acct="$(warp_cli registration show 2>/dev/null | sed -nE 's/.*[Aa]ccount type: *//p' | head -1)"
-      if [ "$acct" = "Free" ]; then
-        echo "dropping the consumer WARP registration so this device can join ${CF_TEAM_NAME}"
-        warp_cli registration delete >/dev/null 2>&1 || true
-      fi
-      # `registration new <ORG>` on current builds; `teams-enroll` on older ones.
-      # Both open a browser for the SSO login.
-      warp_cli registration new "${CF_TEAM_NAME}" 2>/dev/null \
-        || warp_cli teams-enroll "${CF_TEAM_NAME}" 2>/dev/null \
-        || true
-      warp_cli connect 2>/dev/null || true
+      mdm_dir="/Library/Application Support/Cloudflare"
     else
-      # Headless enrolment is driven entirely by mdm.xml.
-      sudo mkdir -p /var/lib/cloudflare-warp
-      sudo tee /var/lib/cloudflare-warp/mdm.xml >/dev/null <<XML
+      mdm_dir="/var/lib/cloudflare-warp"
+    fi
+
+    # The WARP daemon runs as root and reads only this path — a copy under $HOME is
+    # ignored (verified: `mdm get-configs` stays empty). So the write needs sudo,
+    # but only once: later runs reuse the file and never prompt.
+    if [ -f "$mdm_dir/mdm.xml" ]; then
+      echo "-> $mdm_dir/mdm.xml already present (no sudo needed)"
+    else
+    echo "-> writing $mdm_dir/mdm.xml (needs sudo, once)"
+    sudo mkdir -p "$mdm_dir"
+    sudo tee "$mdm_dir/mdm.xml" >/dev/null <<XML
     <dict>
       <key>organization</key>
       <string>${CF_TEAM_NAME}</string>
@@ -250,17 +257,40 @@ connect-warp mode="":
       <string>warp</string>
     </dict>
     XML
-      sudo chmod 600 /var/lib/cloudflare-warp/mdm.xml
-      sudo systemctl restart warp-svc
-
-      # Talking to a daemon that has not started yet fails in a way that looks
-      # exactly like a bad token, so wait for the socket first.
-      for _ in $(seq 1 30); do
-        warp_cli status >/dev/null 2>&1 && break
-        sleep 2
-      done
-      warp_cli connect || true
+    sudo chmod 600 "$mdm_dir/mdm.xml"
+    echo "-> mdm.xml written"
     fi
+
+    echo "-> reloading the warp daemon"
+    if [ "{{os()}}" = "macos" ]; then
+      warp_cli mdm refresh >/dev/null 2>&1 || true
+    else
+      sudo systemctl restart warp-svc
+    fi
+
+    # Talking to a daemon that has not started yet fails in a way that looks
+    # exactly like a bad token, so wait for the socket first.
+    echo "-> waiting for the daemon"
+    for _ in $(seq 1 30); do
+      warp_cli status >/dev/null 2>&1 && break
+      sleep 2
+    done
+
+    # A registration held against another account blocks the token from taking
+    # effect; dropping it is harmless when there is none.
+    echo "-> checking existing registration"
+    acct="$(warp_cli registration show 2>/dev/null | sed -nE 's/.*[Aa]ccount type: *//p' | head -1)"
+    if [ -n "$acct" ] && [ "$acct" = "Free" ]; then
+      echo "dropping the consumer WARP registration so the service token can enrol"
+      warp_cli registration delete >/dev/null 2>&1 || true
+    fi
+
+    # No ORG argument: it comes from mdm.xml, along with the token that authorises it.
+    echo "-> registering with the service token"
+    warp_cli registration new >/dev/null 2>&1 || true
+    echo "-> connecting"
+    warp_cli connect || true
+    echo "-> polling status"
 
     # "Disconnected" does not contain "Connected", so this test is safe.
     for _ in $(seq 1 30); do
@@ -270,13 +300,11 @@ connect-warp mode="":
       sleep 2
     done
 
-    if [ "{{os()}}" = "macos" ]; then
-      echo "" >&2
-      echo "Could not connect automatically. Open the Cloudflare WARP app:" >&2
-      echo "  Preferences -> Account -> Login with Cloudflare Zero Trust" >&2
-      echo "  team name: ${CF_TEAM_NAME:-proud-block-d46f}" >&2
-    fi
-    echo "WARP did not reach Connected" >&2
+    echo "" >&2
+    echo "WARP did not reach Connected. Check with:" >&2
+    echo "  warp-cli status              'Registration Missing' means the service" >&2
+    echo "                               token is rejected by the enrolment policy" >&2
+    echo "  warp-cli registration show   'Account type' should not be Free" >&2
     exit 1
 
 # Open a shell on the box. Add --lan on the home network to skip WARP.
@@ -317,8 +345,12 @@ write-ssh-key:
 _reachable:
     #!/usr/bin/env bash
     set -euo pipefail
+    # macOS BSD nc applies -w only to idle/read timeouts, NOT to the TCP connect —
+    # a blackholed route then blocks for the OS default of ~75s. -G bounds the
+    # connect itself, and only exists on BSD nc, so it is keyed off the OS.
+    if [ "{{os()}}" = "macos" ]; then nc_t=(-G 5 -w 5); else nc_t=(-w 5); fi
     for _ in $(seq 1 15); do
-      if nc -z -w5 "{{host}}" "{{port}}" 2>/dev/null; then
+      if nc -z "${nc_t[@]}" "{{host}}" "{{port}}" 2>/dev/null; then
         echo "{{host}}:{{port}} reachable"; exit 0
       fi
       sleep 2

@@ -16,7 +16,7 @@ Deploys to `nocobase-lxc`, hardened by
 
 | | |
 |---|---|
-| Internet | <https://deepcraft-nocobase.pavel-usanli.online> |
+| Internet | no hostname of its own — reachable only through an onboarded customer domain, see [Point your own domain at it](#point-your-own-domain-at-it) |
 | Home LAN | <http://192.168.1.5/> |
 
 ---
@@ -111,9 +111,9 @@ the home network are untouched.
 just check
 ```
 
-Verifies your tools, your key, WARP, the SSH connection and the public URL, and
-tells you which one is broken — including whether you are reaching the box
-**via LAN** or **via WARP**. **Run this first whenever something misbehaves.**
+Verifies your tools, your key, WARP and the SSH connection, and tells you which
+one is broken — including whether you are reaching the box **via LAN** or **via
+WARP**. **Run this first whenever something misbehaves.**
 
 ```
 tools
@@ -129,7 +129,6 @@ network
   [warn] WARP not connected (fine, you are on the LAN)
   [ok]   tcp 192.168.1.5:22022 open (via LAN)
   [ok]   ssh auth as root
-  [ok]   public url returns 200
 
 all good
 ```
@@ -176,16 +175,49 @@ you run locally.
 ## Point your own domain at it
 
 Your domain stays with your current DNS provider. Subdomains only, not the apex.
+The box has no public hostname of its own — every public URL is a customer domain
+routed in through Cloudflare for SaaS.
 
-**You add**, on your DNS provider:
+**We go first**, because steps 2 and 3 below need values that do not exist until
+the custom hostname has been created. All of this is in
+[homelab-infra](https://github.com/kalpak44/homelab-infra):
 
-| Type | Name | Value |
-|---|---|---|
-| CNAME | `app` | `deepcraft-nocobase.pavel-usanli.online` |
+- **a.** Add your hostname to `local.saas_customers` in
+  `terraform/cloudflare/shared/zero-trust/saas.tf`:
 
-**We add**: `app.yourdomain.com` as a Cloudflare custom hostname and a matching
-tunnel route. Cloudflare then issues and renews the HTTPS certificate for your
-hostname automatically.
+  ```hcl
+  "app.yourdomain.com" = "http://192.168.1.5:80"
+  ```
 
-> Not enabled yet — the Cloudflare API token in `homelab-infra` needs the
-> `SSL and Certificates` permission first.
+  That one line is the whole entry — it creates the Cloudflare custom hostname
+  *and* the tunnel ingress rule, which are folded into `ingress_overrides` and
+  `all_hostnames` from the same map. Both are required: the tunnel matches on the
+  `Host` header, so a custom hostname without an ingress rule negotiates TLS
+  perfectly and then returns 404.
+- **b.** Apply it — `just deploy cloudflare shared/zero-trust`, or the
+  **Cloudflare - Deploy** workflow.
+- **c.** Send you the validation values from
+  `just output cloudflare shared/zero-trust saas_customer_onboarding`.
+
+**You then add**, on your DNS provider:
+
+| | Type | Name | Value |
+|---|---|---|---|
+| **1** | CNAME | `app` | `saas.pavel-usanli.online` — **DNS-only, do not proxy** |
+| **2** | TXT | `_acme-challenge.app.yourdomain.com` | from step **c** |
+| **3** | TXT | `_cf-custom-hostname.app.yourdomain.com` | from step **c** — omit if the value comes back empty |
+
+Cloudflare then issues and renews the HTTPS certificate for your hostname
+automatically. It usually takes a couple of minutes after record 2 is visible.
+
+Notes on the three records:
+
+- **1 must not be proxied.** If your domain also sits behind Cloudflare, an
+  orange-clouded record is served by your own zone's proxy and never reaches the
+  custom-hostname path at all. Grey cloud, or a plain CNAME at any other provider.
+- **2 is the certificate challenge.** Point it at `saas.pavel-usanli.online` only
+  after this record is live, otherwise the hostname is unreachable in the gap
+  between cutting traffic over and the certificate issuing.
+- **3 proves you own the domain.** Cloudflare skips it when the domain already
+  belongs to the same Cloudflare account, in which case step **c** returns nothing
+  for it — that is expected, not a missing value.
