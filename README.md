@@ -50,12 +50,29 @@ Fill in `NOCOBASE_SSH_PRIVATE_KEY` — ask an admin, or from a `homelab-infra`
 checkout run `just output proxmox nocobase-lxc ssh_private_key`. Everything else
 is pre-filled. `.env` is gitignored.
 
-### 3. Join the network (skip if you're on the home LAN)
+### 3. Connect via WARP
 
-**macOS** — `just connect-warp` enrols you and opens a browser to sign in. To do it
-by hand instead:
+`192.168.1.5` is a private address — it does not exist on the public internet.
+Cloudflare WARP puts your machine on that private network, after which the box is
+reachable from anywhere. Skip this step if you are on the home LAN.
 
 ```bash
+just connect-warp
+```
+
+On the home LAN it will say *"already reachable"* and do nothing. To enrol anyway
+so you can test the developer path:
+
+```bash
+just connect-warp --force
+```
+
+**macOS** — a browser opens for the Cloudflare sign-in. If the device is already
+on the consumer "Free" account, `just connect-warp` drops that registration first,
+because a device cannot join an organisation while it holds one. By hand:
+
+```bash
+warp-cli registration delete                      # only if on the "Free" account
 warp-cli registration new proud-block-d46f
 warp-cli connect
 ```
@@ -63,14 +80,30 @@ warp-cli connect
 Or through the app: **Preferences → Account → Login with Cloudflare Zero Trust**,
 team name **`proud-block-d46f`**.
 
-If the device is already on the consumer "Free" account, drop that first with
-`warp-cli registration delete` — `just connect-warp` does this for you.
+**Ubuntu** — fully automatic, no browser. `just connect-warp` enrols headlessly
+with the `CF_WARP_*` service token from `.env`. This is also how CI does it.
 
-**Ubuntu** — `just connect-warp` does it for you, using the two `CF_WARP_*` values
-in `.env`.
+**Confirm it worked:**
+
+```bash
+warp-cli status     # Status update: Connected
+just check          # tcp 192.168.1.5:22022 open (via WARP)
+```
+
+`just check` reports `(via WARP)` or `(via LAN)`, so you can always tell which path
+you are on. Disconnect again with `warp-cli disconnect`.
 
 Only `192.168.1.5` is routed over WARP. The rest of your traffic and the rest of
 the home network are untouched.
+
+**If it does not work:**
+
+| Symptom | Cause |
+|---|---|
+| `unrecognized subcommand 'teams-enroll'` | old command — use `registration new` |
+| `warp-cli status` says `Connected` but `just check` says `(via LAN)` | on the consumer account, not the org — check `warp-cli registration show` says anything but `Account type: Free` |
+| `Registration Missing` | the service token is not accepted by the device-enrolment policy |
+| still unreachable while connected | the split tunnel is missing the `192.168.1.5/32` route |
 
 ### 4. Check it works
 
