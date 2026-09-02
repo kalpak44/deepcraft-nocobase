@@ -3,11 +3,34 @@ server {
     listen {{ nginx_port }} default_server;
     listen [::]:{{ nginx_port }} default_server;
 
-    server_name {{ nginx_server_name }};
-    root {{ nginx_root }};
-    index index.html;
+    # Also answers on the LAN address, so 192.168.1.5 keeps working alongside
+    # the Cloudflare hostname.
+    server_name {{ nginx_server_name }} _;
+
+    client_max_body_size {{ nginx_client_max_body_size }};
 
     location / {
-        try_files $uri $uri/ =404;
+        proxy_pass {{ nginx_proxy_pass }};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # Cloudflare terminates TLS, so the scheme it saw is the only truthful
+        # one — without this NocoBase builds http:// links on an https:// site.
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # The UI holds a websocket open for notifications and async tasks.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Imports, exports and backups stream for minutes on a large dataset.
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    600s;
+        proxy_read_timeout    600s;
+
+        # Buffering breaks the progress streams the async task manager uses.
+        proxy_buffering off;
     }
 }

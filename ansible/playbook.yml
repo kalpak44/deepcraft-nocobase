@@ -1,11 +1,19 @@
 ---
+# Setup only. Data operations live in their own plays so that a routine deploy
+# can never move or overwrite the database:
+#
+#   ansible/backup.yml take a backup and fetch it
+#   ansible/restore.yml restore a backup, including the CRM template
+#   ansible/upgrade.yml bump the version and run migrations
 - name: Configure nocobase
   hosts: nocobase
   become: true
-  # gather_facts is required, not merely convenient: the nodejs role picks its
-  # download from ansible_architecture.
+  # gather_facts is required, not merely convenient: the Node.js role picks its
+  # download from ansible_architecture and the pgdg repo from the release name.
   gather_facts: true
 
+  # nginx is last because it verifies itself by proxying to a running app.
   roles:
-    - nginx
     - nodejs
+    - nocobase
+    - nginx

@@ -23,6 +23,15 @@ jobs:
       CF_TEAM_NAME: ${{ secrets.CF_TEAM_NAME }}
       CF_WARP_CLIENT_ID: ${{ secrets.CF_WARP_CLIENT_ID }}
       CF_WARP_CLIENT_SECRET: ${{ secrets.CF_WARP_CLIENT_SECRET }}
+      POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+      POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
+      POSTGRES_DATABASE_NAME: ${{ secrets.POSTGRES_DATABASE_NAME }}
+      POSTGRES_DATABASE_USERNAME: ${{ secrets.POSTGRES_DATABASE_USERNAME }}
+      POSTGRES_DATABASE_PASSWORD: ${{ secrets.POSTGRES_DATABASE_PASSWORD }}
+      NOCOBASE_APP_KEY: ${{ secrets.NOCOBASE_APP_KEY }}
+      NOCOBASE_ROOT_EMAIL: ${{ secrets.NOCOBASE_ROOT_EMAIL }}
+      NOCOBASE_ROOT_USERNAME: ${{ secrets.NOCOBASE_ROOT_USERNAME }}
+      NOCOBASE_ROOT_PASSWORD: ${{ secrets.NOCOBASE_ROOT_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v2

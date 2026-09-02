@@ -1,0 +1,39 @@
+---
+# systemd rather than the bundled pm2: the box is a plain LXC container with an
+# init system already, and pm2 would add a second supervisor that systemd cannot
+# see the health of.
+- name: Install the systemd unit
+  ansible.builtin.template:
+    src: nocobase.service.j2
+    dest: /etc/systemd/system/nocobase.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nocobase
+
+- name: Start nocobase and enable it at boot
+  ansible.builtin.systemd:
+    name: nocobase
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending restarts now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# The first boot compiles and loads every plugin, which takes appreciably longer
+# than a restart, so this waits rather than checking once.
+- name: Wait for the application to answer
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ nocobase_app_port }}/api/app:getInfo"
+    status_code: 200
+  register: _app_check
+  until: _app_check.status == 200
+  retries: 60
+  delay: 5
+
+- name: Show what is running
+  ansible.builtin.debug:
+    msg: >-
+      nocobase {{ nocobase_version }} up on 127.0.0.1:{{ nocobase_app_port }},
+      database {{ nocobase_db_name }} at {{ nocobase_db_host }}

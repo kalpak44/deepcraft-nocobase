@@ -1,0 +1,158 @@
+---
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ nocobase_user }}"
+    home: "{{ nocobase_home }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: true
+
+- name: Own the home directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ nocobase_user }}"
+    group: "{{ nocobase_user }}"
+    mode: "0750"
+  loop:
+    - "{{ nocobase_home }}"
+    - "{{ nocobase_backup_dir }}"
+
+# Plain npm rather than community.general.npm: CI installs bare ansible-core, so
+# no collection beyond ansible.builtin is guaranteed to be present.
+- name: Read the yarn version already installed
+  ansible.builtin.command: yarn --version
+  register: _yarn_version
+  changed_when: false
+  failed_when: false
+
+- name: Install yarn 1.22.x
+  ansible.builtin.command: "npm install --global yarn@{{ nocobase_yarn_version }}"
+  when: (_yarn_version.stdout | default('') | trim) != nocobase_yarn_version
+  changed_when: true
+
+# npm's global prefix is the versioned node directory, so yarn lands next to node
+# rather than on PATH — and moves out from under itself whenever the Node.js role
+# installs a new LTS. The link is to `current`, which the Node.js role repoints,
+# so it survives that; a node upgrade that drops yarn is caught by the version
+# check above on the next run.
+- name: Put yarn on PATH
+  ansible.builtin.file:
+    src: "{{ nodejs_prefix }}/current/bin/yarn"
+    dest: "{{ nodejs_bin_dir }}/yarn"
+    state: link
+
+- name: Look for an existing application
+  ansible.builtin.stat:
+    path: "{{ nocobase_app_dir }}/package.json"
+  register: _app
+
+# create-nocobase-app refuses to write into an existing directory, so this runs
+# exactly once per box. --skip-dev-dependencies drop @nocobase/devtools and the
+# React resolutions that only matter when building plugins from source.
+#
+# No secrets are passed: the generator writes a .env that the next task replaces
+# wholesale, so anything given here would be overwritten seconds later while
+# still ending up in the process table.
+- name: Generate the application
+  ansible.builtin.command:
+    argv:
+      - npx
+      - --yes
+      - "create-nocobase-app@{{ nocobase_version }}"
+      - app
+      - -d
+      - postgres
+      - --skip-dev-dependencies
+    chdir: "{{ nocobase_home }}"
+  become_user: "{{ nocobase_user }}"
+  environment:
+    HOME: "{{ nocobase_home }}"
+  when: not _app.stat.exists
+
+# Rewritten on every run so a changed secret or port actually lands, and so the
+# generated file stops being the source of truth.
+- name: Write the application env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ nocobase_app_dir }}/.env"
+    owner: "{{ nocobase_user }}"
+    group: "{{ nocobase_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart nocobase
+
+- name: Read the pinned application version
+  ansible.builtin.command: "grep -o '\"@nocobase/app\": \"[^\"]*\"' {{ nocobase_app_dir }}/package.json"
+  register: _pinned
+  changed_when: false
+
+# An upgrade is a different operation with its own play (ansible/upgrade.yml)
+# because it has to stop the service and run migrations. Bumping the pin without
+# going through it would leave the installed tree and the database out of a step.
+- name: Refuse to change version behind the upgrade play's back
+  ansible.builtin.assert:
+    that: nocobase_version in _pinned.stdout
+    fail_msg: >-
+      installed {{ _pinned.stdout }} but nocobase_version is
+      {{ nocobase_version }} — run `just upgrade` instead
+    quiet: true
+
+- name: Fingerprint the installed dependency tree
+  ansible.builtin.stat:
+    path: "{{ nocobase_app_dir }}/node_modules/.yarn-integrity"
+    checksum_algorithm: sha1
+  register: _deps_before
+
+- name: Install the dependencies
+  ansible.builtin.command:
+    cmd: yarn install --production --frozen-lockfile
+    chdir: "{{ nocobase_app_dir }}"
+  become_user: "{{ nocobase_user }}"
+  changed_when: false # decided by the fingerprint below
+  environment:
+    HOME: "{{ nocobase_home }}"
+
+- name: Fingerprint it again
+  ansible.builtin.stat:
+    path: "{{ nocobase_app_dir }}/node_modules/.yarn-integrity"
+    checksum_algorithm: sha1
+  register: _deps_after
+
+# yarn rebuilds packages and reruns post install on every invocation, so its
+# output says nothing about whether anything moved — "Already up to date" never
+# appears. The integrity file is the only honest signal, and it is also what
+# decides whether the running process is stale.
+- name: Note a changed dependency tree
+  ansible.builtin.debug:
+    msg: "dependency tree changed"
+  changed_when: true
+  notify: Restart nocobase
+  when: _deps_before.stat.checksum | default('') != _deps_after.stat.checksum
+
+# Converges: against a database that already holds the schema, it does nothing,
+# and on an empty one it creates the tables and the root user. Run every time so
+# a wiped database heals itself.
+#
+# changed_when is false because it cannot be anything else — the command logs the
+# same "success" either way, with nothing in the output to tell the two apart.
+- name: Install NocoBase into the database
+  ansible.builtin.command:
+    cmd: yarn nocobase install --lang=en-US
+    chdir: "{{ nocobase_app_dir }}"
+  become_user: "{{ nocobase_user }}"
+  changed_when: false
+  environment:
+    HOME: "{{ nocobase_home }}"
+
+# Both @nocobase/plugin-backups and the older @nocobase/plugin-backup-restore
+# ship in the preset and both register a `restore` command; the former
+# only understands the v2 .nbdata format, so it has to be the one enabled.
+- name: Enable the Backup Manager plugin
+  ansible.builtin.command:
+    cmd: yarn nocobase pm enable backups
+    chdir: "{{ nocobase_app_dir }}"
+  become_user: "{{ nocobase_user }}"
+  changed_when: false # as above: enabling twice logs the same "success"
+  environment:
+    HOME: "{{ nocobase_home }}"

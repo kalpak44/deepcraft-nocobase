@@ -1,0 +1,234 @@
+---
+# Restore a .nbdata archive. THIS REPLACES THE ENTIRE DATABASE.
+#
+#   just restore-crm-template the NocoBase CRM 2.0 template
+#   just restore backups/<file> a backup taken by ansible/backup.yml
+#
+# Kept out of playbook.yml on purpose so a routine deployment can never reach it.
+- name: Restore nocobase
+  hosts: nocobase
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - roles/nocobase/defaults/main.yml
+
+  vars:
+    # Exactly one of these. restore_local is a path on the machine running the
+    # play; restore_crm pulls the published template instead.
+    restore_local: ""
+    restore_crm: false
+    # Nothing is overwritten without this, because the play cannot tell a
+    # deliberate restore from a mistyped recipe.
+    restore_confirm: false
+
+    _api: "http://127.0.0.1:{{ nocobase_app_port }}/api"
+    # What NocoBase seeds every installation with, and therefore what any
+    # published archive carries.
+    restore_archive_default_account: admin@nocobase.com
+    restore_archive_default_password: admin123
+
+  pre_tasks:
+    - name: Require an explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - restore_confirm | bool
+          - (restore_crm | bool) != (restore_local | length > 0)
+        fail_msg: >-
+          restore replaces every table in {{ nocobase_db_name }} at
+          {{ nocobase_db_host }}. Pass -e restore_confirm=true and exactly one of
+          -e restore_crm=true or -e restore_local=<path>.
+        quiet: true
+
+  tasks:
+    - name: Make sure the staging directory exists
+      ansible.builtin.file:
+        path: "{{ nocobase_backup_dir }}"
+        state: directory
+        owner: "{{ nocobase_user }}"
+        group: "{{ nocobase_user }}"
+        mode: "0750"
+
+    # Fetched on the box rather than proxied through the control machine: it is a
+    # public URL and the container has free internet egress.
+    - name: Download the CRM template
+      ansible.builtin.get_url:
+        url: "{{ nocobase_crm_backup_url }}"
+        dest: "{{ nocobase_backup_dir }}/{{ nocobase_crm_backup_file }}"
+        owner: "{{ nocobase_user }}"
+        group: "{{ nocobase_user }}"
+        mode: "0640"
+      when: restore_crm | bool
+
+    - name: Upload the local archive
+      ansible.builtin.copy:
+        src: "{{ restore_local }}"
+        dest: "{{ nocobase_backup_dir }}/{{ restore_local | basename }}"
+        owner: "{{ nocobase_user }}"
+        group: "{{ nocobase_user }}"
+        mode: "0640"
+      when: restore_local | length > 0
+
+    - name: Settle on the file to restore
+      ansible.builtin.set_fact:
+        _restore_file: >-
+          {{ nocobase_backup_dir }}/{{ nocobase_crm_backup_file if restore_crm | bool else restore_local | basename }}
+
+    # The archive carries the dialect, server version and underscored flag it was
+    # written with. Restoring across a mismatch corrupts silently rather than
+    # failing, so it is checked here instead of being discovered later.
+    - name: Read the archive metadata
+      ansible.builtin.command: "unzip -p {{ _restore_file | quote }} _metadata.json"
+      register: _meta
+      changed_when: false
+
+    - name: Refuse an archive that does not match this database
+      ansible.builtin.assert:
+        that:
+          - (_meta.stdout | from_json).database.dialect == 'postgres'
+          - (_meta.stdout | from_json).database.underscored | bool == nocobase_db_underscored | bool
+        fail_msg: >-
+          archive was dumped from
+          {{ (_meta.stdout | from_json).database.dialect }} with
+          underscored={{ (_meta.stdout | from_json).database.underscored }},
+          this database is postgres with
+          underscored={{ nocobase_db_underscored }}
+        quiet: true
+
+    - name: Show what is about to be restored
+      ansible.builtin.debug:
+        msg: >-
+          restoring {{ _restore_file | basename }}
+          (nocobase {{ (_meta.stdout | from_json).version }},
+          {{ (_meta.stdout | from_json).database.version | regex_search('PostgreSQL [0-9.]+') }})
+          into {{ nocobase_db_name }} at {{ nocobase_db_host }}
+
+    # The restore command opens the database itself rather than talking to the
+    # running app, so leaving the service up means two processes writing the same
+    # tables while the schema is being replaced.
+    - name: Stop nocobase
+      ansible.builtin.systemd:
+        name: nocobase
+        state: stopped
+
+    - name: Restore the archive
+      ansible.builtin.command:
+        cmd: "yarn nocobase restore {{ _restore_file | quote }}"
+        chdir: "{{ nocobase_app_dir }}"
+      become_user: "{{ nocobase_user }}"
+      environment:
+        HOME: "{{ nocobase_home }}"
+      changed_when: true
+
+    # The restore replays the schema the archive was taken from, which for the
+    # CRM template is 2.1.0-beta.36 — older than the code. Without this the app
+    # comes back up in maintenance mode with a bare "column ... does not exist".
+    # The command logs "Cannot find plugin" once per commercial plugin the
+    # archive references and this install does not have; that is expected and
+    # does not stop the migration.
+    - name: Migrate the restored schema up to the installed version
+      ansible.builtin.command:
+        cmd: yarn nocobase upgrade
+        chdir: "{{ nocobase_app_dir }}"
+      become_user: "{{ nocobase_user }}"
+      environment:
+        HOME: "{{ nocobase_home }}"
+      register: _upgrade
+      changed_when: true
+      failed_when: "'has been upgraded to' not in _upgrade.stdout"
+
+    - name: Start nocobase
+      ansible.builtin.systemd:
+        name: nocobase
+        state: started
+
+    - name: Wait for the application to answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ nocobase_app_port }}/api/app:getInfo"
+        status_code: 200
+      register: _app_check
+      until: _app_check.status == 200
+      retries: 60
+      delay: 5
+
+    # A restore replaces the users table with the archive's own. For the CRM
+    # template that means the superuser becomes admin@nocobase.com / admin123 — a
+    # published default, on a box reachable from the internet. Putting the
+    # configured account back is part of the restore, not a follow-up.
+    - name: Sign in with the configured credentials
+      ansible.builtin.uri:
+        url: "{{ _api }}/auth:signIn"
+        method: POST
+        headers:
+          X-Authenticator: basic
+        body_format: json
+        body:
+          account: "{{ nocobase_root_username }}"
+          password: "{{ nocobase_root_password }}"
+        status_code: [200, 401]
+      register: _signin_configured
+      no_log: true
+
+    # Only reached when the archive brought its own users, which is exactly the
+    # case this exists for.
+    - name: Fall back to the credentials the archive shipped with
+      ansible.builtin.uri:
+        url: "{{ _api }}/auth:signIn"
+        method: POST
+        headers:
+          X-Authenticator: basic
+        body_format: json
+        body:
+          account: "{{ restore_archive_default_account }}"
+          password: "{{ restore_archive_default_password }}"
+        status_code: 200
+      register: _signin_default
+      when: _signin_configured.status != 200
+      no_log: true
+
+    - name: Settle on a token
+      ansible.builtin.set_fact:
+        _token: >-
+          {{ (_signin_configured if _signin_configured.status == 200
+              else _signin_default).json.data.token }}
+      no_log: true
+
+    # appLang is set too: the published template comes across as zh-CN.
+    - name: Put the configured superuser back
+      ansible.builtin.uri:
+        url: "{{ _api }}/users:update?filterByTk=1"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          username: "{{ nocobase_root_username }}"
+          email: "{{ nocobase_root_email }}"
+          password: "{{ nocobase_root_password }}"
+          appLang: en-US
+        status_code: 200
+      changed_when: true
+      no_log: true
+
+    - name: Confirm the archive's own credentials no longer work
+      ansible.builtin.uri:
+        url: "{{ _api }}/auth:signIn"
+        method: POST
+        headers:
+          X-Authenticator: basic
+        body_format: json
+        body:
+          account: "{{ restore_archive_default_account }}"
+          password: "{{ restore_archive_default_password }}"
+        status_code: 401
+      when: _signin_configured.status != 200
+
+    # The CRM template was exported from an installation that had the commercial
+    # plugins. On a community installation those menu entries are simply absent — the
+    # docs call this out, and the core CRM still works.
+    - name: Note the plugins the archive expects but this install may not have
+      ansible.builtin.debug:
+        msg: >-
+          archive references {{ (_meta.stdout | from_json).plugins | length }}
+          plugins; any commercial ones not licensed here will be missing from the
+          menu

@@ -1,0 +1,91 @@
+---
+# Move to a new NocoBase release and run its migrations.
+#
+#   just upgrade 2.3.0
+#
+# Separate from playbook.yml because it stops the service and writes to the
+# database. playbook.yml asserts that the pin has not moved, so a version bump
+# without this play fails loudly instead of half-applying.
+- name: Upgrade nocobase
+  hosts: nocobase
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - roles/nocobase/defaults/main.yml
+
+  vars:
+    upgrade_to: ""
+
+  pre_tasks:
+    - name: Require a target version
+      ansible.builtin.assert:
+        that: upgrade_to | length > 0
+        fail_msg: "pass -e upgrade_to=<version>, e.g. -e upgrade_to=2.3.0"
+        quiet: true
+
+    # Migrations are one-way. The play refuses to run without a fresh archive to
+    # go back to rather than trusting that someone remembered.
+    - name: Confirm a backup was taken first
+      ansible.builtin.assert:
+        that: upgrade_backup_taken | default(false) | bool
+        fail_msg: >-
+          run `just backup` first, then re-run with
+          -e upgrade_backup_taken=true
+        quiet: true
+
+  tasks:
+    - name: Stop nocobase
+      ansible.builtin.systemd:
+        name: nocobase
+        state: stopped
+
+    # The generated package.json pins @nocobase/app; `nocobase upgrade` reads the
+    # pin, so the pin is what has to move.
+    - name: Move the version pin
+      ansible.builtin.command:
+        cmd: "yarn add @nocobase/app@{{ upgrade_to }} -W --exact"
+        chdir: "{{ nocobase_app_dir }}"
+      become_user: "{{ nocobase_user }}"
+      environment:
+        HOME: "{{ nocobase_home }}"
+      changed_when: true
+
+    - name: Install the new dependencies
+      ansible.builtin.command:
+        cmd: yarn install --production
+        chdir: "{{ nocobase_app_dir }}"
+      become_user: "{{ nocobase_user }}"
+      environment:
+        HOME: "{{ nocobase_home }}"
+      changed_when: true
+
+    - name: Run the migrations
+      ansible.builtin.command:
+        cmd: yarn nocobase upgrade
+        chdir: "{{ nocobase_app_dir }}"
+      become_user: "{{ nocobase_user }}"
+      environment:
+        HOME: "{{ nocobase_home }}"
+      changed_when: true
+
+    - name: Start nocobase
+      ansible.builtin.systemd:
+        name: nocobase
+        state: started
+
+    - name: Wait for the application to answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ nocobase_app_port }}/api/app:getInfo"
+        status_code: 200
+      register: _app_check
+      until: _app_check.status == 200
+      retries: 60
+      delay: 5
+
+    - name: Remind that the pin has to follow in git
+      ansible.builtin.debug:
+        msg: >-
+          the box now runs {{ upgrade_to }} — set nocobase_version to
+          {{ upgrade_to }} in ansible/roles/nocobase/defaults/main.yml and commit,
+          or the next `just deploy-ansible` will refuse to run

@@ -1,0 +1,106 @@
+---
+# Take a backup and bring it back to the machine that ran the play.
+#
+#   just backup
+#
+# There is no `nocobase backup` CLI — Backup Manager exposes only `restore` that
+# way — so this drives its `backup` resource over the API instead. The result is
+# the same .nbdata archive the UI produces, attachments included, and it is what
+# restore.yml consumes.
+#
+# Scheduled backups are a separate thing: configure those in the Backup Manager
+# settings. This play is for the ad-hoc one taken before an upgrade or a restore.
+- name: Back up nocobase
+  hosts: nocobase
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - roles/nocobase/defaults/main.yml
+
+  vars:
+    backup_fetch_dir: "{{ playbook_dir }}/../backups"
+    _api: "http://127.0.0.1:{{ nocobase_app_port }}/api"
+
+  tasks:
+    - name: Sign in as the root user
+      ansible.builtin.uri:
+        url: "{{ _api }}/auth:signIn"
+        method: POST
+        headers:
+          X-Authenticator: basic
+        body_format: json
+        body:
+          account: "{{ nocobase_root_username }}"
+          password: "{{ nocobase_root_password }}"
+        status_code: 200
+      register: _auth
+      no_log: true
+
+    - name: Start the backup
+      ansible.builtin.uri:
+        url: "{{ _api }}/backup:create"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _auth.json.data.token }}"
+        body_format: json
+        body: {}
+        status_code: 200
+      register: _created
+      changed_when: true
+
+    - name: Name the archive being written
+      ansible.builtin.set_fact:
+        _backup_name: "{{ _created.json.data.name }}"
+
+    # create returns as soon as the dump is queued; only the status endpoint
+    # knows when the file is complete.
+    - name: Wait for the dump to finish
+      ansible.builtin.uri:
+        url: "{{ _api }}/backup:status?name={{ _backup_name }}"
+        headers:
+          Authorization: "Bearer {{ _auth.json.data.token }}"
+        status_code: 200
+      register: _status
+      until: not (_status.json.data[_backup_name].inProgress | default(true))
+      retries: 120
+      delay: 5
+
+    # A failed dump reports inProgress false with the reason attached, so the
+    # wait above finishes happily on a backup that does not exist.
+    - name: Fail on a backup that errored
+      ansible.builtin.assert:
+        that: _status.json.data[_backup_name].message is not defined
+        fail_msg: "backup failed: {{ _status.json.data[_backup_name].message | default('') }}"
+        quiet: true
+
+    - name: Locate the archive on disk
+      ansible.builtin.find:
+        paths: "{{ nocobase_home }}"
+        patterns: "{{ _backup_name }}"
+        recurse: true
+      register: _found
+
+    - name: Refuse to report success without a file
+      ansible.builtin.assert:
+        that: _found.files | length == 1
+        fail_msg: "{{ _backup_name }} was not found under {{ nocobase_home }}"
+        quiet: true
+
+    - name: Create the local destination
+      ansible.builtin.file:
+        path: "{{ backup_fetch_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Fetch the backup
+      ansible.builtin.fetch:
+        src: "{{ _found.files[0].path }}"
+        dest: "{{ backup_fetch_dir }}/"
+        flat: true
+
+    - name: Show where it landed
+      ansible.builtin.debug:
+        msg: "{{ backup_fetch_dir }}/{{ _backup_name }}"

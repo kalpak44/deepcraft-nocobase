@@ -1,0 +1,54 @@
+---
+# NocoBase is installed from npm with create-nocobase-app, not Docker: the target
+# is an unprivileged LXC container where nesting is off.
+#
+# The version pins BOTH tools — create-nocobase-app writes its own version into
+# the generated package.json as the `@nocobase/app` dependency, so this single
+# value determines the NocoBase release. CRM 2.0 needs >= 2.1.0-beta.2.
+nocobase_version: "2.2.6"
+
+# create-nocobase-app requires Yarn 1.22.x specifically, not berry.
+nocobase_yarn_version: "1.22.22"
+
+nocobase_user: nocobase
+# On /data, not /opt: node_modules and the storage tree together outgrow the 20G
+# root disk, and /data is the 49G volume the container was given for exactly this.
+nocobase_home: /data/nocobase
+nocobase_app_dir: "{{ nocobase_home }}/app"
+
+nocobase_app_port: 13000
+nocobase_app_env: production
+nocobase_timezone: Etc/UTC
+
+# Secrets — no defaults on purpose, the play asserts they are set.
+nocobase_app_key: "{{ lookup('env', 'NOCOBASE_APP_KEY') }}"
+nocobase_root_email: "{{ lookup('env', 'NOCOBASE_ROOT_EMAIL') }}"
+nocobase_root_username: "{{ lookup('env', 'NOCOBASE_ROOT_USERNAME') }}"
+nocobase_root_password: "{{ lookup('env', 'NOCOBASE_ROOT_PASSWORD') }}"
+nocobase_root_nickname: "Super Admin"
+
+nocobase_db_host: "{{ lookup('env', 'POSTGRES_HOST') }}"
+nocobase_db_port: "{{ lookup('env', 'POSTGRES_PORT') | default(5432, true) }}"
+nocobase_db_name: "{{ lookup('env', 'POSTGRES_DATABASE_NAME') }}"
+nocobase_db_user: "{{ lookup('env', 'POSTGRES_DATABASE_USERNAME') }}"
+nocobase_db_password: "{{ lookup('env', 'POSTGRES_DATABASE_PASSWORD') }}"
+
+# The CRM 2.0 template was dumped from a database with underscored off, and the
+# restore refuses to run against a mismatched setting.
+nocobase_db_underscored: false
+
+# Two constraints meet here. The CRM template is a pg_dump custom archive in the
+# v1.16 format, which postgresql-client-16 cannot read; and the server is 18, so
+# the client should not be older than it either. Ubuntu 24.04 ships 16 only, so
+# the client comes from PGDG.
+nocobase_pg_client_major: 18
+
+# The major version of the CRM template was dumped from. Restoring it into a NEWER
+# server is fine and is the only direction Backup Manager allows — it refuses
+# when the backup is from a higher version than the target.
+nocobase_crm_backup_pg_major: 16
+
+# The template itself. Restored by ansible/restore.yml, never by the setup play.
+nocobase_crm_backup_url: https://static-docs.nocobase.com/nocobase_crm_v2_backup_260523.nbdata
+nocobase_crm_backup_file: nocobase_crm_v2_backup_260523.nbdata
+nocobase_backup_dir: "{{ nocobase_home }}/backups"

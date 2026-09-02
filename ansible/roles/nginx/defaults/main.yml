@@ -1,4 +1,12 @@
 ---
 nginx_port: 80
-nginx_server_name: _
+nginx_server_name: ownai.deepcraftstudio.com
 nginx_root: /var/www/nocobase
+
+# nginx is a reverse proxy in front of NocoBase, not a static site. TLS is
+# terminated by Cloudflare for SaaS before the tunnel, so this listens on plain
+# :80 and trusts the forwarded scheme.
+nginx_proxy_pass: "http://127.0.0.1:13000"
+
+# Attachments and imports go through the same vhost; the default 1m rejects them.
+nginx_client_max_body_size: 100m

@@ -27,11 +27,18 @@ help:
     @echo ""
     @echo "use"
     @echo "  just connect-ssh           shell on the box (connects WARP first)"
-    @echo "  just deploy-ansible        run the playbook  (connects WARP first)"
+    @echo "  just deploy-ansible        run the setup playbook (connects WARP first)"
+    @echo "  just logs                  tail the nocobase journal"
     @echo ""
     @echo "  ...add --lan to either when you are on the home network:"
     @echo "  just connect-ssh --lan"
     @echo "  just deploy-ansible --lan"
+    @echo ""
+    @echo "data — these touch the database, deploy never does"
+    @echo "  just backup                take a backup and fetch it to ./backups"
+    @echo "  just restore FILE          restore a .nbdata from ./backups"
+    @echo "  just restore-crm-template  install the NocoBase CRM 2.0 template"
+    @echo "  just upgrade VERSION       move to a new release and migrate"
     @echo ""
     @echo "extras"
     @echo "  just connect-warp          join the Zero Trust network (--force to re-enrol)"
@@ -314,16 +321,55 @@ connect-ssh mode="": write-ssh-key
     [ "{{mode}}" = "--lan" ] || just connect-warp
     exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}"
 
-# Run the ansible playbook. Add --lan on the home network to skip WARP.
+# Run the setup playbook. Add --lan on the home network to skip WARP.
 deploy-ansible mode="": write-ssh-key
     #!/usr/bin/env bash
     set -euo pipefail
     [ "{{mode}}" = "--lan" ] || just connect-warp
-    just _reachable
-    cd ansible
-    NOCOBASE_HOST="{{host}}" NOCOBASE_SSH_PORT="{{port}}" NOCOBASE_SSH_USER="{{user}}" \
-    ANSIBLE_HOST_KEY_CHECKING=False \
-      ansible-playbook playbook.yml --private-key "{{key_file}}"
+    just _ansible playbook.yml
+
+# Take a backup and fetch it into ./backups.
+backup mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    just _ansible backup.yml
+
+# Restore a .nbdata archive. Replaces every table in the database.
+restore file mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f "{{file}}" ] || { echo "no such file: {{file}}" >&2; exit 1; }
+    echo "This REPLACES the whole ${POSTGRES_DATABASE_NAME} database with {{file}}."
+    read -r -p "Type the database name to continue: " answer
+    [ "$answer" = "${POSTGRES_DATABASE_NAME}" ] || { echo "aborted" >&2; exit 1; }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    just _ansible restore.yml -e restore_confirm=true -e "restore_local=$(cd "$(dirname "{{file}}")" && pwd)/$(basename "{{file}}")"
+
+# Install the published NocoBase CRM 2.0 template. Replaces the whole database.
+restore-crm-template mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "This REPLACES the whole ${POSTGRES_DATABASE_NAME} database with the CRM template."
+    read -r -p "Type the database name to continue: " answer
+    [ "$answer" = "${POSTGRES_DATABASE_NAME}" ] || { echo "aborted" >&2; exit 1; }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    just _ansible restore.yml -e restore_confirm=true -e restore_crm=true
+
+# Move to a new NocoBase release and run its migrations. Back up first.
+upgrade version mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    just backup --lan
+    just _ansible upgrade.yml -e upgrade_to={{version}} -e upgrade_backup_taken=true
+
+# Tail the application log.
+logs mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" journalctl -u nocobase -f -n 100
 
 # Write the deploy key to disk. Accepts a raw PEM or the base64 form.
 write-ssh-key:
@@ -340,6 +386,16 @@ write-ssh-key:
     # Fail here rather than inside ansible, where a bad key looks like a refused
     # connection.
     ssh-keygen -y -f "{{key_file}}" >/dev/null
+
+# Every play runs the same way: check the box answers, then hand ansible the
+# inventory and database settings from .env. Recipes differ only in arguments.
+_ansible play *args: _reachable
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd ansible
+    NOCOBASE_HOST="{{host}}" NOCOBASE_SSH_PORT="{{port}}" NOCOBASE_SSH_USER="{{user}}" \
+    ANSIBLE_HOST_KEY_CHECKING=False \
+      ansible-playbook "{{play}}" --private-key "{{key_file}}" {{args}}
 
 # Confirm the box answers, so routing and SSH failures stay distinguishable.
 _reachable:

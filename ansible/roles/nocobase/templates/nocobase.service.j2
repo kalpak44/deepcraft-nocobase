@@ -1,0 +1,33 @@
+# Managed by ansible/roles/nocobase — edits on the host are overwritten.
+[Unit]
+Description=NocoBase
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ nocobase_user }}
+Group={{ nocobase_user }}
+WorkingDirectory={{ nocobase_app_dir }}
+Environment=HOME={{ nocobase_home }}
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/yarn start
+Restart=always
+RestartSec=5
+# Plugin loading on a cold start is slow enough to trip the 90s default.
+TimeoutStartSec=300
+KillMode=mixed
+
+# The app only ever writes inside its own tree.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths={{ nocobase_home }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nocobase
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,75 @@
+---
+# Backup Manager shells out to pg_dump/pg_restore, so the client has to be on the
+# box. It also has to be new enough: pg_restore reads archives written by its own
+# major version and older, never newer, and the CRM template is a v1.16 archive
+# from pg_dump 17. Ubuntu 24.04 only offers 16.
+- name: Add the PGDG signing key
+  ansible.builtin.get_url:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    dest: /etc/apt/keyrings/postgresql.asc
+    mode: "0644"
+
+- name: Add the PGDG repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/etc/apt/keyrings/postgresql.asc]
+      https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main
+    filename: pgdg
+    state: present
+
+- name: Install the postgres client
+  ansible.builtin.apt:
+    name: "postgresql-client-{{ nocobase_pg_client_major }}"
+    state: present
+    update_cache: true
+
+# PGDG puts every major version under /usr/lib/postgresql/<major>/bin and picks
+# the newest for /usr/bin via a wrapper, so this is a check rather than a fix —
+# but a silently-16 pg_restore fails deep inside the restore with an unhelpful
+# "unsupported version" instead of here.
+- name: Check the pg_restore that is actually on PATH
+  ansible.builtin.command: pg_restore --version
+  register: _pg_restore
+  changed_when: false
+
+- name: Take the major version out of the banner
+  ansible.builtin.set_fact:
+    _pg_restore_major: >-
+      {{ _pg_restore.stdout | regex_replace('^[^0-9]*([0-9]+).*$', '\1') | int }}
+
+- name: Refuse a pg_restore too old for the backup format
+  ansible.builtin.assert:
+    that: _pg_restore_major | int >= nocobase_pg_client_major | int
+    success_msg: "pg_restore {{ _pg_restore_major }}"
+    fail_msg: >-
+      pg_restore on PATH is "{{ _pg_restore.stdout }}", older than
+      {{ nocobase_pg_client_major }} — it cannot read the backup archive format
+    quiet: true
+
+- name: Read the server version of the target database
+  ansible.builtin.command:
+    argv:
+      - psql
+      - "postgresql://{{ nocobase_db_user }}:{{ nocobase_db_password }}@{{ nocobase_db_host }}:{{ nocobase_db_port }}/{{ nocobase_db_name }}"
+      - -tAc
+      - SHOW server_version_num
+  register: _pg_server
+  changed_when: false
+  no_log: true
+
+- name: Take the major version out of the server version number
+  ansible.builtin.set_fact:
+    _pg_server_major: "{{ (_pg_server.stdout | trim | int) // 10000 }}"
+
+# The installation docs say the server "must match" the backup, but what Backup
+# Manager actually enforces is one-directional: it refuses a backup taken on a
+# HIGHER major than the target and allows the reverse. Restoring the template's
+# 16 into a newer server is the supported direction, so that is what is asserted.
+- name: Refuse a server older than the CRM template
+  ansible.builtin.assert:
+    that: _pg_server_major | int >= nocobase_crm_backup_pg_major | int
+    success_msg: "postgres {{ _pg_server_major }} at {{ nocobase_db_host }}"
+    fail_msg: >-
+      {{ nocobase_db_host }} runs postgres {{ _pg_server_major }}, older than the
+      {{ nocobase_crm_backup_pg_major }} the CRM template was dumped from
+    quiet: true

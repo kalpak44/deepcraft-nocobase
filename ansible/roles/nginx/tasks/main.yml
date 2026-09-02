@@ -8,23 +8,6 @@
     update_cache: true
     cache_valid_time: 3600
 
-- name: Create document root
-  ansible.builtin.file:
-    path: "{{ nginx_root }}"
-    state: directory
-    owner: www-data
-    group: www-data
-    mode: "0755"
-
-- name: Deploy index page
-  ansible.builtin.template:
-    src: index.html.j2
-    dest: "{{ nginx_root }}/index.html"
-    owner: www-data
-    group: www-data
-    mode: "0644"
-  notify: Reload nginx
-
 - name: Deploy site config
   ansible.builtin.template:
     src: site.conf.j2
@@ -49,6 +32,13 @@
     state: absent
   notify: Reload nginx
 
+# nginx served a static page before it became a reverse proxy; leaving the root
+# behind makes it look like it is still in use.
+- name: Remove the old static document root
+  ansible.builtin.file:
+    path: "{{ nginx_root }}"
+    state: absent
+
 - name: Validate the nginx config before any reload
   ansible.builtin.command: nginx -t
   changed_when: false
@@ -62,13 +52,14 @@
 - name: Apply pending reloads now, before verifying
   ansible.builtin.meta: flush_handlers
 
-- name: Verify nginx answers on port {{ nginx_port }}
+- name: Verify the proxy reaches NocoBase
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ nginx_port }}/"
-    return_content: true
+    url: "http://127.0.0.1:{{ nginx_port }}/api/app:getInfo"
+    headers:
+      Host: "{{ nginx_server_name }}"
     status_code: 200
   register: _nginx_check
 
 - name: Show what was served
   ansible.builtin.debug:
-    msg: "nginx on {{ ansible_host }}:{{ nginx_port }} returned {{ _nginx_check.status }}"
+    msg: "nginx proxied {{ nginx_server_name }} to {{ nginx_proxy_pass }} ({{ _nginx_check.status }})"

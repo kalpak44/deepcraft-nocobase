@@ -1,14 +1,21 @@
 # deepcraft-nocobase
 
-Deploys to `nocobase-lxc`, hardened by
-[homelab-infra](https://github.com/kalpak44/homelab-infra).
+Runs [NocoBase](https://www.nocobase.com/) 2.2.6 with the
+[CRM 2.0](https://docs.nocobase.com/solution/crm) template on `nocobase-lxc`,
+hardened by [homelab-infra](https://github.com/kalpak44/homelab-infra).
+
+No Docker — NocoBase is installed from npm and supervised by systemd, with
+nginx in front of it and Postgres on a separate box.
 
 ## What's here
 
 | | |
 |---|---|
-| `ansible/` | all ansible scripts |
-| `.github/workflows/deploy.yml` | github pipeline, deploys on push to main |
+| `ansible/playbook.yml` | setup: node, nocobase, nginx. Never touches data |
+| `ansible/backup.yml` | take a backup and fetch it |
+| `ansible/restore.yml` | restore a backup, or the published CRM template |
+| `ansible/upgrade.yml` | move to a new release and run its migrations |
+| `.github/workflows/deploy.yml` | github pipeline, runs the setup playbook on push to main |
 | `Justfile` | every command below — CI runs the same ones |
 | `.env.example` | copy to `.env` and fill in |
 
@@ -16,8 +23,20 @@ Deploys to `nocobase-lxc`, hardened by
 
 | | |
 |---|---|
-| Internet | no hostname of its own — reachable only through an onboarded customer domain, see [Point your own domain at it](#point-your-own-domain-at-it) |
+| Internet | <https://ownai.deepcraftstudio.com> — routed in through Cloudflare for SaaS, see [Point your own domain at it](#point-your-own-domain-at-it) |
 | LAN | <http://192.168.1.5/> |
+
+Sign in with the `NOCOBASE_ROOT_*` credentials from `.env`.
+
+## How it is put together
+
+| | |
+|---|---|
+| App | `/data/nocobase/app`, installed with `create-nocobase-app`, run by `nocobase.service` as the `nocobase` user |
+| Disk | **`/` is only 20G** — everything lives on the 49G `/data` volume |
+| Database | external Postgres 18 at `192.168.1.4:5432` |
+| nginx | reverse proxy on `:80`; TLS is terminated by Cloudflare before the tunnel |
+| Node | current LTS, installed by the `nodejs` role from the nodejs.org tarball |
 
 ---
 
@@ -143,9 +162,24 @@ all good
 | `just install-cli-tools` | install ansible + WARP (once per machine) |
 | `just check` | verify tools, key and connectivity — start here |
 | `just connect-ssh` | shell on the box; connects WARP first |
-| `just deploy-ansible` | run the playbook; connects WARP first |
+| `just deploy-ansible` | run the setup playbook; connects WARP first |
+| `just logs` | tail the nocobase journal |
 | `just connect-warp` | join the Zero Trust network on its own |
 | `just write-ssh-key` | write the deploy key to disk |
+
+These touch the database, and are deliberately not part of a deploy:
+
+| Command | Does |
+|---|---|
+| `just backup` | take a backup and fetch it into `./backups` |
+| `just restore backups/<file>` | **replaces the whole database** with that archive |
+| `just restore-crm-template` | **replaces the whole database** with the published CRM 2.0 template |
+| `just upgrade <version>` | backs up, moves the pin, migrates, restarts |
+
+Both restore commands ask you to type the database name before they do anything.
+A restore also replaces the users table, so the play puts your configured
+`NOCOBASE_ROOT_*` account back afterwards — otherwise the CRM template would
+leave the box on NocoBase's published `admin@nocobase.com` / `admin123`.
 
 Add `--lan` to `connect-ssh` or `deploy-ansible` when you're on the home network
 and want to skip WARP entirely:
@@ -172,10 +206,16 @@ GitHub runner → WARP → Cloudflare → tunnel → 192.168.1.5:22022
 CI runs `just install-cli-tools` then `just deploy-ansible` — the same commands
 you run locally.
 
-The playbook installs nginx and the current Node.js LTS, resolved from
-`nodejs.org` at run time and checksum-verified. Node 26 becomes LTS in October
-2026, so set `nodejs_lts_line: "24"` in `ansible/roles/nodejs/defaults/main.yml`
-if you would rather not cross that boundary automatically.
+The setup playbook installs the current Node.js LTS, resolved from `nodejs.org`
+at run time and checksum-verified, then NocoBase, then nginx. Node 26 becomes
+LTS in October 2026, so set `nodejs_lts_line: "24"` in
+`ansible/roles/nodejs/defaults/main.yml` if you would rather not cross that
+boundary automatically.
+
+It never migrates or overwrites data: the NocoBase version is pinned by
+`nocobase_version` in `ansible/roles/nocobase/defaults/main.yml`, and the play
+fails if the box is running something else rather than upgrading it behind your
+back. Use `just upgrade <version>` and commit the new pin.
 
 ## Point your own domain at it
 

@@ -1,0 +1,31 @@
+---
+- name: Refuse to deploy without the secrets
+  ansible.builtin.assert:
+    that:
+      - nocobase_app_key | length > 0
+      - nocobase_root_email | length > 0
+      - nocobase_root_username | length > 0
+      - nocobase_root_password | length > 0
+      - nocobase_db_host | length > 0
+      - nocobase_db_name | length > 0
+      - nocobase_db_user | length > 0
+      - nocobase_db_password | length > 0
+    fail_msg: >-
+      missing configuration — NOCOBASE_APP_KEY, NOCOBASE_ROOT_* and POSTGRES_*
+      must be set. Locally they come from .env; in CI from repo secrets.
+    quiet: true
+
+- name: Install the runtime prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg
+      - git # yarn resolves some transitive deps over git
+      - unzip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- ansible.builtin.import_tasks: postgres_client.yml
+- ansible.builtin.import_tasks: app.yml
+- ansible.builtin.import_tasks: service.yml

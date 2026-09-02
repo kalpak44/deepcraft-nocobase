@@ -9,3 +9,6 @@
 id_rsa*
 id_ed25519*
 .env
+
+# Fetched backups — real customer data, and large
+/backups/
