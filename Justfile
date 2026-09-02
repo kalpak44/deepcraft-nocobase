@@ -286,7 +286,10 @@ connect-warp mode="":
     # A registration held against another account blocks the token from taking
     # effect; dropping it is harmless when there is none.
     echo "-> checking existing registration"
-    acct="$(warp_cli registration show 2>/dev/null | sed -nE 's/.*[Aa]ccount type: *//p' | head -1)"
+    # `registration show` exits non-zero when there is no registration at all,
+    # which is the normal state on a fresh CI runner — and under pipefail that
+    # would abort the enrolment this recipe exists to perform.
+    acct="$(warp_cli registration show 2>/dev/null | sed -nE 's/.*[Aa]ccount type: *//p' | head -1 || true)"
     if [ -n "$acct" ] && [ "$acct" = "Free" ]; then
       echo "dropping the consumer WARP registration so the service token can enrol"
       warp_cli registration delete >/dev/null 2>&1 || true
