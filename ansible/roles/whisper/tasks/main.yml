@@ -19,13 +19,19 @@
     state: directory
     mode: "0755"
 
+# force is required, not a shortcut: the cmake configure step below regenerates
+# bindings/javascript/package.json inside the checkout, so the tree is dirty from
+# the first build onwards and an unforced clone fails every rerun with "Local
+# modifications exist". Discarding is right — nothing here is edited by hand.
+# The reset leaves build/ and models/ alone, both being untracked, so this does
+# not trigger a rebuild or a re-download.
 - name: Clone whisper.cpp at the pinned tag
   ansible.builtin.git:
     repo: "{{ whisper_repo }}"
     dest: "{{ whisper_dir }}"
     version: "{{ whisper_version }}"
     depth: 1
-  register: _clone
+    force: true
 
 - name: Download the ggml model
   ansible.builtin.get_url:
