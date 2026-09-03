@@ -1,0 +1,36 @@
+# Managed by ansible/roles/whisper — edits on the host are overwritten.
+[Unit]
+Description=whisper.cpp server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ whisper_dir }}
+ExecStart={{ whisper_dir }}/build/bin/whisper-server \
+  --model {{ whisper_dir }}/models/{{ whisper_model_name }} \
+  --threads {{ whisper_threads }} \
+  --port {{ whisper_port }} \
+  --host {{ whisper_bind }}
+Restart=always
+RestartSec=5
+# Same reasoning as nocobase.service: Restart=always spaces attempts wider than
+# the default 10s window, so without this a broken start loops forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# This box also runs NocoBase on two cores and 4G with no swap. The ceiling is
+# hard on purpose: whisper dies on its own excess rather than letting the kernel
+# choose between it and the application.
+MemoryMax={{ whisper_memory_max }}
+CPUQuota={{ whisper_cpu_quota }}
+CPUWeight={{ whisper_cpu_weight }}
+
+# It reads a model and answers HTTP; it has no business anywhere else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths={{ whisper_dir }}
+
+[Install]
+WantedBy=multi-user.target

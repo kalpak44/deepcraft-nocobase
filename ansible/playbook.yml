@@ -13,7 +13,10 @@
   gather_facts: true
 
   # nginx is last because it verifies itself by proxying to a running app.
+  # whisper comes after nocobase, so a first run builds it against a box that is
+  # already serving, and its ~10-minute build cannot delay the application.
   roles:
     - nodejs
     - nocobase
+    - whisper
     - nginx

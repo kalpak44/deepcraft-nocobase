@@ -24,11 +24,11 @@ Everything is driven through `just`; CI runs the same recipes.
 | path | what |
 |---|---|
 | `Justfile` | every command — setup, checks, deploy, data operations. CI calls these, not raw ansible |
-| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `nginx` |
+| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `whisper` → `nginx` |
 | `ansible/backup.yml` | take a backup and fetch it to `./backups` |
 | `ansible/restore.yml` | restore a `.nbdata`, including the CRM template |
 | `ansible/upgrade.yml` | move to a new release and run its migrations |
-| `ansible/roles/*` | one role per concern (`nginx`, `nodejs`, `nocobase`) |
+| `ansible/roles/*` | one role per concern (`nginx`, `nodejs`, `nocobase`, `whisper`) |
 | `ansible/inventory.yml` | host details come from env vars, nothing committed |
 | `.github/workflows/deploy.yml` | runs `playbook.yml` on push to `main` touching `ansible/`, `Justfile`, or itself |
 | `.env.example` | copy to `.env`; `.env` and `./backups/` are gitignored |

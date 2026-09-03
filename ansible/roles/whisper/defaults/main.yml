@@ -1,0 +1,42 @@
+---
+# whisper.cpp speech-to-text, ported from homelab-infra's whisper-lxc role.
+# That role owns a container of its own; this one shares a 2-core, 4G box with
+# NocoBase, so it pins a version, takes a smaller model and runs under limits.
+
+whisper_repo: https://github.com/ggerganov/whisper.cpp.git
+# A tag, never a branch: `master` makes the build unreproducible, and a rebuild
+# that pulls a new upstream is not something a deployment should do silently.
+whisper_version: v1.9.3
+
+# On /data, never /. The root volume is 20G and is not where the software goes —
+# see the disk note in CLAUDE.md.
+whisper_dir: /data/whisper
+
+# large-v3-turbo rather than the large-v3 the dedicated box runs: 547M against
+# 1031M, and several times faster on CPU, which matters when there are two
+# shared cores. Multilingual — the .en models cannot read the Russian records
+# already in this database.
+# Swap the name and the checksum together; the sha256 is the file's LFS oid,
+# from https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/main
+whisper_model_name: ggml-large-v3-turbo-q5_0.bin
+whisper_model_sha256: 394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2
+whisper_model_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{{ whisper_model_name }}?download=true"
+
+# Loopback, not 0.0.0.0. The only client is on this box, and the container sits
+# behind a Cloudflare tunnel — binding the LAN would publish an unauthenticated
+# transcription endpoint. Set to 0.0.0.0 only with something in front of it.
+whisper_bind: 127.0.0.1
+whisper_port: 8080
+
+# The whole point of colocating carefully. NocoBase peaks around 700M on a 4G
+# box with no swap, so whisper gets a hard ceiling it cannot cross: exceeding it
+# kills whisper, which is recoverable, instead of the kernel picking a victim.
+whisper_memory_max: 1800M
+# Both cores, but yielding: CPUWeight below the default 100 means whisper only
+# gets the cores when NocoBase is not asking for them.
+whisper_cpu_quota: 150%
+whisper_cpu_weight: 20
+
+# Threads the server decodes with. One less than the box has, so a transcription
+# can never occupy every core at once.
+whisper_threads: 1
