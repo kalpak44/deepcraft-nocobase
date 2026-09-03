@@ -366,6 +366,30 @@ upgrade version mode="": write-ssh-key
     [ "{{mode}}" = "--lan" ] || just connect-warp
     just backup --lan
     just _ansible upgrade.yml -e upgrade_to={{version}} -e upgrade_backup_taken=true
+    # The play only proves the API answers. Whether the pages still render is a
+    # separate question, and the one that reaches users first.
+    echo ""
+    echo "-> checking the pages still render"
+    just smoke
+
+# Load every admin page in a real browser and fail if one kills the tab.
+# Needs no SSH: it drives the public URL exactly as a user's browser would.
+smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v node >/dev/null 2>&1 || { echo "node is required for 'just smoke'" >&2; exit 1; }
+    : "${NOCOBASE_PUBLIC_URL:?set NOCOBASE_PUBLIC_URL in .env}"
+
+    # Kept out of the repo root so the application tree stays free of JS tooling.
+    # --silent because a clean install prints more than the check it precedes.
+    if [ ! -d scripts/node_modules ]; then
+      echo "-> installing playwright (first run only)"
+      npm install --prefix scripts --silent
+    fi
+    # Idempotent, and a no-op once the browser is in the shared cache.
+    node scripts/node_modules/playwright/cli.js install --only-shell chromium
+
+    node scripts/smoke.mjs
 
 # Tail the application log.
 logs mode="": write-ssh-key

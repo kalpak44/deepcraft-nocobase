@@ -12,3 +12,7 @@ id_ed25519*
 
 # Fetched backups — real customer data, and large
 /backups/
+
+# Installed on demand by `just smoke`, never committed
+/scripts/node_modules/
+/scripts/package-lock.json

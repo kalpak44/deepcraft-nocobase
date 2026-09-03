@@ -39,6 +39,7 @@ Everything is driven through `just`; CI runs the same recipes.
 just check                      # tools, key, connectivity — run this first when something breaks
 just deploy-ansible [--lan]     # setup playbook; never touches data
 just logs [--lan]               # tail the nocobase journal
+just smoke                      # load every admin page in a browser; no SSH needed
 ```
 
 Data operations are deliberately separate from deploy — a routine deploy can

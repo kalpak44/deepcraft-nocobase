@@ -164,6 +164,7 @@ all good
 | `just connect-ssh` | shell on the box; connects WARP first |
 | `just deploy-ansible` | run the setup playbook; connects WARP first |
 | `just logs` | tail the nocobase journal |
+| `just smoke` | load every admin page in a real browser and fail if one crashes the tab |
 | `just connect-warp` | join the Zero Trust network on its own |
 | `just write-ssh-key` | write the deploy key to disk |
 

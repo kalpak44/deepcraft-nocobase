@@ -1,0 +1,9 @@
+{
+  "name": "deepcraft-nocobase-smoke",
+  "private": true,
+  "type": "module",
+  "description": "Browser smoke check — not part of the application, only run by `just smoke`",
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}
