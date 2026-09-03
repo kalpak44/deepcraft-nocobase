@@ -3,6 +3,12 @@
 Description=NocoBase
 After=network-online.target
 Wants=network-online.target
+# Restart=always spaces attempts RestartSec apart, which is wider than the 10s
+# default window — so the limit never trips and a boot that cannot succeed
+# loops forever instead of failing. Five failures inside two minutes is a
+# broken start, and it should end in `failed` where a play can see it.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
