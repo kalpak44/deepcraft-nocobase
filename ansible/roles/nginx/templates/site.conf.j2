@@ -1,4 +1,12 @@
 # Managed by ansible/roles/nginx — edits on the host are overwritten.
+# Only send "Connection: upgrade" when the client actually asked to upgrade.
+# Hardcoding it puts an upgrade header on every ordinary API request, which
+# breaks keep-alive and stalls requests until the websocket settles.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen {{ nginx_port }} default_server;
     listen [::]:{{ nginx_port }} default_server;
@@ -23,7 +31,7 @@ server {
 
         # The UI holds a websocket open for notifications and async tasks.
         proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
 
         # Imports, exports and backups stream for minutes on a large dataset.
         proxy_connect_timeout 60s;
