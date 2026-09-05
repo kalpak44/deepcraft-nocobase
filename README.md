@@ -66,8 +66,10 @@ cp .env.example .env
 ```
 
 Fill in `NOCOBASE_SSH_PRIVATE_KEY` — ask an admin, or from a `homelab-infra`
-checkout run `just output proxmox nocobase-lxc ssh_private_key`. Everything else
-is pre-filled. `.env` is gitignored.
+checkout run `just output proxmox nocobase-lxc ssh_private_key`. Off the home LAN
+you also need `CF_WARP_CLIENT_ID` and `CF_WARP_CLIENT_SECRET`; ask an admin, or
+`just output cloudflare shared/zero-trust warp_service_token_client_secret`.
+Everything else is pre-filled. `.env` is gitignored.
 
 ### 3. Connect via WARP
 
@@ -86,21 +88,18 @@ so you can test the developer path:
 just connect-warp --force
 ```
 
-**macOS** — a browser opens for the Cloudflare sign-in. If the device is already
-on the consumer "Free" account, `just connect-warp` drops that registration first,
-because a device cannot join an organisation while it holds one. By hand:
+**macOS and Ubuntu enrol the same way**, headlessly, with the `CF_WARP_*` service
+token from `.env` — exactly what CI does. `just connect-warp` writes it to the
+daemon's `mdm.xml` and reloads; the only difference between the two systems is
+where that file lives. It needs `sudo` the first time and never again.
 
-```bash
-warp-cli registration delete                      # only if on the "Free" account
-warp-cli registration new proud-block-d46f
-warp-cli connect
-```
+There is **no browser sign-in**, on either platform. The Zero Trust account has no
+identity provider and its device-enrolment policy accepts service tokens only, so
+**Preferences → Login with Cloudflare Zero Trust** and `warp-cli registration new
+<team>` both fail with `Registration Missing`. Ask an admin for the token values.
 
-Or through the app: **Preferences → Account → Login with Cloudflare Zero Trust**,
-team name **`proud-block-d46f`**.
-
-**Ubuntu** — fully automatic, no browser. `just connect-warp` enrols headlessly
-with the `CF_WARP_*` service token from `.env`. This is also how CI does it.
+If the device is already on the consumer "Free" account, `just connect-warp` drops
+that registration first — a device cannot join an organisation while it holds one.
 
 **Confirm it worked:**
 
