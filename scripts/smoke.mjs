@@ -14,6 +14,7 @@
 //   NOCOBASE_ROOT_EMAIL / NOCOBASE_ROOT_PASSWORD   an account that can see the pages
 //   SMOKE_LOADS           loads per page, default 3
 //   SMOKE_SETTLE_MS       how long to let a page run before judging it, default 8000
+//   SMOKE_EVAL_MS         how long to wait for the main thread to answer, default 10000
 import { chromium } from 'playwright';
 
 const BASE = (process.env.NOCOBASE_PUBLIC_URL || '').replace(/\/+$/, '');
@@ -21,6 +22,15 @@ const EMAIL = process.env.NOCOBASE_ROOT_EMAIL || '';
 const PASSWORD = process.env.NOCOBASE_ROOT_PASSWORD || '';
 const LOADS = Number(process.env.SMOKE_LOADS || 3);
 const SETTLE_MS = Number(process.env.SMOKE_SETTLE_MS || 8000);
+
+// A pinned renderer never answers page.evaluate, and Playwright puts no timeout
+// on it — so without a bound the check hangs forever on precisely the failure it
+// exists to find. A page that cannot answer in this long is not slow, it is hung.
+const EVAL_MS = Number(process.env.SMOKE_EVAL_MS || 10000);
+
+// A sentinel rather than a thrown error: the page not answering is an expected
+// outcome of this check, not an exception in it.
+const PINNED = Symbol('pinned');
 
 // A page that survives but pins the main thread is also broken, just less
 // obviously. Chosen well above a healthy load (measured ~130-185MB on this
@@ -99,11 +109,21 @@ const checkOnce = async (browser, token, page) => {
     if (crashed) return { ok: false, reason: 'renderer crashed' };
 
     // Reaching this at all means the main thread answered, which a spinning
-    // page cannot do.
-    const stats = await tab.evaluate(() => ({
-      heapMB: Math.round((performance.memory?.usedJSHeapSize || 0) / 1048576),
-      dom: document.getElementsByTagName('*').length,
-    }));
+    // page cannot do — so running out of patience here IS the result, not a
+    // flake. The evaluate keeps its own catch: once the race is settled a late
+    // rejection has nothing awaiting it, and would take the process down.
+    let timer;
+    const stats = await Promise.race([
+      tab.evaluate(() => ({
+        heapMB: Math.round((performance.memory?.usedJSHeapSize || 0) / 1048576),
+        dom: document.getElementsByTagName('*').length,
+      })).catch((e) => ({ failed: String(e.message).split('\n')[0].slice(0, 200) })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(PINNED), EVAL_MS); }),
+    ]);
+    clearTimeout(timer);
+
+    if (stats === PINNED) return { ok: false, reason: `main thread pinned, no answer in ${EVAL_MS}ms` };
+    if (stats.failed) return { ok: false, reason: crashed ? 'renderer crashed' : stats.failed };
     if (stats.heapMB > HEAP_LIMIT_MB) {
       return { ok: false, reason: `heap ${stats.heapMB}MB over the ${HEAP_LIMIT_MB}MB limit`, stats };
     }
