@@ -1,0 +1,15 @@
+{
+  "Transcription": "Transcription",
+  "Audio Transcription": "Audio Transcription",
+  "Lets AI employees transcribe audio (by URL or inline base64) via the transcribeAudio tool.": "Lets AI employees transcribe audio (by URL or inline base64) via the transcribeAudio tool.",
+  "Checking…": "Checking…",
+  "Configured": "Configured",
+  "Not configured": "Not configured",
+  "Default provider": "Default provider",
+  "Default model": "Default model",
+  "(active provider)": "(active provider)",
+  "Action needed": "Action needed",
+  "Providers": "Providers",
+  "Refresh": "Refresh",
+  "Disabled": "Disabled"
+}

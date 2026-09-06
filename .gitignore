@@ -23,3 +23,9 @@ id_ed25519*
 # Left behind by running an MCP server locally — ansible ships the sources only
 /mcp_servers/*/node_modules/
 /mcp_servers/*/server.log
+
+# Plugin build artefacts — `app/` is a whole NocoBase source tree that
+# scripts/build.sh downloads, `dist/` is the packed tarball the release carries
+/plugins/*/app/
+/plugins/*/dist/
+/plugins/*/node_modules/
