@@ -1,0 +1,53 @@
+---
+# A credentialed WebDAV share on the same nginx that already fronts NocoBase, so
+# it arrives over the existing Cloudflare hostname and needs no WARP, no VPN
+# client and no open WAN port. Mounts natively on Windows, macOS and Linux.
+
+# Served as a path on the existing vhost rather than a hostname of its own.
+# A second hostname would mean a Cloudflare record plus a tunnel ingress rule in
+# homelab-infra; a path needs neither, because the hostname already resolves to
+# this nginx.
+webdav_location: /webdav
+
+# `root`, not `alias`, which is why the URL prefix and the directory name have to
+# match: nginx's dav module mishandles the Destination header of MOVE and COPY
+# under alias, so the share is /data/webdav reached at /webdav.
+#
+# /data and not /, which is only 20G. A subdirectory of it and never /data
+# itself: /data/nocobase is the application and /data/ciela-mcp the MCP server,
+# and nginx would be writing here as www-data.
+webdav_parent: /data
+webdav_dir: "{{ webdav_parent }}{{ webdav_location }}"
+
+# Upload staging. It matters that this is on the same filesystem as webdav_dir:
+# nginx writes the body to a temp file and then rename()s it into place, and
+# rename across devices fails with EXDEV. nginx's default lives under /var/lib
+# on the root volume, so leaving it alone breaks every upload larger than the
+# in-memory buffer while small ones keep working.
+webdav_tmp: "{{ webdav_parent }}/.nginx-webdav-tmp"
+
+# Runtime state, exactly like the share's contents. The role creates this file
+# empty if it is missing and never writes to it again — CI applies the playbook
+# on every push to main, so anything the playbook declared here it would also
+# delete. Accounts are managed with `just webdav-user-add` / `-remove`.
+# Dropped into the directory the nginx vhost globs — see nginx_extra_locations_dir.
+webdav_location_file: /etc/nginx/locations.d/webdav.conf
+
+webdav_htpasswd: /etc/nginx/webdav.htpasswd
+webdav_realm: "deepcraft files"
+
+# The nginx worker identity. Every file created through the share is owned by it,
+# so the share has one identity on disk no matter who uploaded — WebDAV carries
+# no per-user file ownership the way SMB does.
+webdav_owner: www-data
+
+# 0 disables nginx's own limit. It is not the effective ceiling: Cloudflare caps
+# request bodies at 100M on Free and Pro, and that applies to anything arriving
+# through the tunnel. Only a LAN client talking to 192.168.1.5 directly escapes
+# it. Raising this cannot lift the Cloudflare limit.
+webdav_max_body_size: 0
+
+# Real locking, not the stub the module falls back to without a zone. macOS
+# Finder will mount read-only if LOCK is unsupported, which looks like a
+# permissions fault rather than a missing feature.
+webdav_lock_zone_size: 10m

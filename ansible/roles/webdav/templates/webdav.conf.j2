@@ -1,0 +1,44 @@
+# Managed by ansible/roles/webdav — edits on the host are overwritten.
+#
+# Included from the NocoBase vhost, so this is a location block and nothing else.
+# The vhost's `location /` proxies to NocoBase; nginx matches the longest prefix,
+# so this wins for {{ webdav_location }}/ without the two interfering.
+
+location {{ webdav_location }}/ {
+    # `root`, not `alias` — see the note in the role's defaults. nginx appends
+    # the URI to this, so {{ webdav_location }}/x resolves to {{ webdav_dir }}/x.
+    root {{ webdav_parent }};
+
+    auth_basic "{{ webdav_realm }}";
+    auth_basic_user_file {{ webdav_htpasswd }};
+
+    # The built-in dav module supplies the write verbs; PROPFIND and OPTIONS come
+    # from dav_ext and are what make this mountable at all — without them a client
+    # cannot enumerate a directory and every mount attempt fails.
+    dav_methods PUT DELETE MKCOL COPY MOVE;
+    dav_ext_methods PROPFIND OPTIONS LOCK UNLOCK;
+    dav_ext_lock zone=webdav;
+
+    # Without this a PUT into a directory the client has not created yet 409s.
+    create_full_put_path on;
+
+    # nginx's MKCOL handler rejects any URI that does not end in "/" with a bare
+    # 409, and clients differ on whether they send the slash — measured: without
+    # it 409, with it 201. Normalising here is what stops "new folder" failing
+    # for some clients and working for others.
+    if ($request_method = MKCOL) {
+        rewrite ^(.*[^/])$ $1/ break;
+    }
+
+    # Group-writable so the files stay usable from a shell on the box; every
+    # upload is owned by {{ webdav_owner }} regardless of which account wrote it.
+    dav_access user:rw group:rw all:r;
+
+    client_max_body_size {{ webdav_max_body_size }};
+    # Same filesystem as the share, or large uploads die on a cross-device rename.
+    client_body_temp_path {{ webdav_tmp }};
+
+    # Only affects a plain browser GET on a directory; WebDAV clients list with
+    # PROPFIND. Handy for checking the share from a browser.
+    autoindex on;
+}

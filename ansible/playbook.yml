@@ -12,7 +12,10 @@
   # download from ansible_architecture and the pgdg repo from the release name.
   gather_facts: true
 
-  # nginx is last because it verifies itself by proxying to a running app.
+  # webdav is last because it adds a location to the vhost nginx has just
+  # written and verified — it needs that vhost to already exist, and nginx is
+  # itself last for the reason below.
+  # nginx is second to last because it verifies itself by proxying to a running app.
   # whisper comes after nocobase, so a first run builds it against a box that is
   # already serving, and its ~10-minute build cannot delay the application.
   # ciela_mcp goes before it for the same reason in reverse: it is seconds of
@@ -23,3 +26,4 @@
     - ciela_mcp
     - whisper
     - nginx
+    - webdav

@@ -19,6 +19,12 @@ host     := env_var_or_default("NOCOBASE_HOST", "192.168.1.5")
 port     := env_var_or_default("NOCOBASE_SSH_PORT", "22022")
 user     := env_var_or_default("NOCOBASE_SSH_USER", "root")
 
+# The WebDAV share. Both must match ansible/roles/webdav/defaults/main.yml — the
+# recipes below manage the accounts in that password file, and the role is what
+# points nginx at it.
+webdav_htpasswd := env_var_or_default("WEBDAV_HTPASSWD", "/etc/nginx/webdav.htpasswd")
+webdav_location := env_var_or_default("WEBDAV_LOCATION", "/webdav")
+
 # Show the available commands.
 help:
     @echo "setup"
@@ -33,6 +39,11 @@ help:
     @echo "  ...add --lan to either when you are on the home network:"
     @echo "  just connect-ssh --lan"
     @echo "  just deploy-ansible --lan"
+    @echo ""
+    @echo "webdav — who may mount the file share"
+    @echo "  just webdav-users          list the accounts that can mount the share"
+    @echo "  just webdav-user-add NAME  create an account, or reset its password"
+    @echo "  just webdav-user-remove NAME  revoke access (files on the share are kept)"
     @echo ""
     @echo "data — these touch the database, deploy never does"
     @echo "  just backup                take a backup and fetch it to ./backups"
@@ -464,6 +475,106 @@ logs mode="": write-ssh-key
     set -euo pipefail
     [ "{{mode}}" = "--lan" ] || just connect-warp
     exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" journalctl -u nocobase -f -n 100
+
+# ── WebDAV accounts ──────────────────────────────────────────────────────────
+#
+# Share accounts are runtime state, not deploy state: the webdav role creates the
+# password file empty and never writes to it again, because CI applies
+# playbook.yml on every push to main and would delete anything it declared.
+#
+# These recipes reach the box over SSH, so off the LAN they still need WARP —
+# that is the admin path. The people using the share need none of it: they mount
+# an https:// URL through the Cloudflare hostname with no client software.
+#
+# nginx re-reads the password file per request, so none of these need a reload.
+
+# List the accounts that can mount the share.
+webdav-users mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s "{{webdav_htpasswd}}" <<'REMOTE'
+    set -eu
+    file="$1"
+    if [ ! -f "$file" ]; then
+      echo "no password file at $file - run 'just deploy-ansible' first" >&2
+      exit 1
+    fi
+    if [ ! -s "$file" ]; then
+      echo "(no accounts yet - add one with 'just webdav-user-add NAME')"
+      exit 0
+    fi
+    cut -d: -f1 "$file" | sort
+    REMOTE
+
+# Create a share account, or reset the password of one that already exists.
+webdav-user-add name mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Bound through single quotes before anything reads it: inside double quotes
+    # this shell would expand a $(...) in the argument while validating it, so the
+    # check would reject the result only after the command had already run.
+    name='{{name}}'
+    [[ "$name" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || {
+      echo "invalid username '$name' - letters, digits and . _ @ - only" >&2
+      exit 1
+    }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+
+    # read -s so it is never echoed, twice so a typo cannot become a password
+    # nobody knows.
+    read -rsp "password for $name: " pw; echo
+    read -rsp "repeat: " pw2; echo
+    [ -n "$pw" ] || { echo "empty password refused" >&2; exit 1; }
+    [ "$pw" = "$pw2" ] || { echo "passwords do not match" >&2; exit 1; }
+
+    # base64, so whatever the password contains cannot break the script's
+    # quoting — the alphabet is alphanumeric plus + / =. It travels inside the
+    # script on stdin rather than as an argument, so it never appears in argv or
+    # in ps on the box. \$ below is escaped to defer to the remote shell; $name
+    # and $pw_b64 are meant to expand here.
+    pw_b64=$(printf '%s' "$pw" | base64 | tr -d '\n')
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s <<REMOTE
+    set -eu
+    name='$name'
+    file='{{webdav_htpasswd}}'
+    loc='{{webdav_location}}'
+    pw=\$(printf '%s' '$pw_b64' | base64 -d)
+    [ -f "\$file" ] || { echo "no password file at \$file - run 'just deploy-ansible' first" >&2; exit 1; }
+    # -i reads the password from stdin. Never -c, which would truncate the file
+    # and delete every other account. -B is bcrypt.
+    printf '%s' "\$pw" | htpasswd -B -i "\$file" "\$name" >/dev/null 2>&1
+    # Proves the account works through nginx, not merely that a line was written:
+    # a wrong file mode or an unsupported hash both look fine on disk. The
+    # credentials go in a 0600 temp file rather than on curl's command line.
+    umask 077
+    rc=\$(mktemp)
+    trap 'rm -f "\$rc"' EXIT
+    printf 'user = "%s:%s"\n' "\$name" "\$pw" > "\$rc"
+    code=\$(curl -K "\$rc" -s -o /dev/null -w '%{http_code}' -X PROPFIND "http://127.0.0.1\$loc/")
+    [ "\$code" = 207 ] || { echo "account written but nginx answered \$code, expected 207" >&2; exit 1; }
+    REMOTE
+    echo "$name can now mount the share (verified against nginx)"
+
+# Revoke access. Files the account left on the share are kept.
+webdav-user-remove name mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name='{{name}}'
+    [[ "$name" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || { echo "invalid username '$name'" >&2; exit 1; }
+    echo "This removes the share account '$name'. Files it uploaded are kept."
+    read -r -p "Type the username to continue: " answer
+    [ "$answer" = "$name" ] || { echo "aborted" >&2; exit 1; }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s "$name" "{{webdav_htpasswd}}" <<'REMOTE'
+    set -eu
+    name="$1"; file="$2"
+    cut -d: -f1 "$file" | grep -qx "$name" || { echo "no such account: $name" >&2; exit 1; }
+    htpasswd -D "$file" "$name" >/dev/null 2>&1
+    cut -d: -f1 "$file" | grep -qx "$name" && { echo "delete did not take effect" >&2; exit 1; }
+    exit 0
+    REMOTE
+    echo "$name can no longer mount the share"
 
 # Write the deploy key to disk. Accepts a raw PEM or the base64 form.
 write-ssh-key:

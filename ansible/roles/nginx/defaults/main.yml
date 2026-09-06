@@ -10,3 +10,13 @@ nginx_proxy_pass: "http://127.0.0.1:13000"
 
 # Attachments and imports go through the same vhost; the default 1m rejects them.
 nginx_client_max_body_size: 100m
+
+# Pulled into the vhost so another role can add locations to it without this one
+# knowing what they are — ansible/roles/webdav writes the only such file today.
+#
+# Its own directory rather than the stock /etc/nginx/snippets, which Ubuntu
+# populates with fastcgi-php.conf and snakeoil.conf: those hold directives that
+# are illegal in server context, so globbing that directory into the vhost would
+# fail nginx -t. A glob matching no files at all is fine, which is what makes
+# this safe on a run before any snippet exists.
+nginx_extra_locations_dir: /etc/nginx/locations.d

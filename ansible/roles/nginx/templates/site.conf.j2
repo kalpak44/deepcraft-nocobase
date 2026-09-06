@@ -17,6 +17,11 @@ server {
 
     client_max_body_size {{ nginx_client_max_body_size }};
 
+    # Locations owned by other roles. nginx matches the longest prefix, so a
+    # snippet claiming /webdav/ wins over the catch-all below without either
+    # needing to know about the other.
+    include {{ nginx_extra_locations_dir }}/*.conf;
+
     location / {
         proxy_pass {{ nginx_proxy_pass }};
         proxy_http_version 1.1;

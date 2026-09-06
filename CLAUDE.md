@@ -17,6 +17,7 @@ Everything is driven through `just`; CI runs the same recipes.
 | Database | **external** Postgres 18 at `192.168.1.4:5432`, not on this box |
 | Docker | not installed and not wanted — everything runs natively under systemd |
 | Process | `nocobase.service`, running `yarn start` as the `nocobase` user |
+| WebDAV | `/data/webdav` served by the same nginx at `/webdav/`, basic auth from `/etc/nginx/webdav.htpasswd`. Accounts are runtime state — `just webdav-user-*`, never the playbook. Uploads cap at 100 MB (Cloudflare), not at nginx |
 | TLS | terminated by Cloudflare for SaaS; nginx sees plain HTTP on `:80` |
 
 ## Layout
@@ -24,11 +25,11 @@ Everything is driven through `just`; CI runs the same recipes.
 | path | what |
 |---|---|
 | `Justfile` | every command — setup, checks, deploy, data operations. CI calls these, not raw ansible |
-| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `ciela_mcp` → `whisper` → `nginx` |
+| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `ciela_mcp` → `whisper` → `nginx` → `webdav` |
 | `ansible/backup.yml` | take a backup and fetch it to `./backups` |
 | `ansible/restore.yml` | restore a `.nbdata`, including the CRM template |
 | `ansible/upgrade.yml` | move to a new release and run its migrations |
-| `ansible/roles/*` | one role per concern (`ciela_mcp`, `nginx`, `nodejs`, `nocobase`, `whisper`) |
+| `ansible/roles/*` | one role per concern (`ciela_mcp`, `nginx`, `nodejs`, `nocobase`, `webdav`, `whisper`) |
 | `mcp_servers/*` | MCP servers the AI employees call; `ciela_mcp` ships `ciela-mcp` to the box |
 | `ansible/inventory.yml` | host details come from env vars, nothing committed |
 | `.github/workflows/deploy.yml` | runs `playbook.yml` on push to `main` touching `ansible/`, `Justfile`, or itself |
@@ -45,6 +46,15 @@ just smoke                      # load every admin page in a browser; no SSH nee
 
 Data operations are deliberately separate from deploy — a routine deploy can
 never move or overwrite the database:
+
+Share accounts are managed outside the playbook, because CI applies it on every
+push and would delete anything it declared:
+
+```bash
+just webdav-users               # who can mount the share
+just webdav-user-add NAME       # create an account, or reset its password
+just webdav-user-remove NAME    # revoke access; uploaded files are kept
+```
 
 ```bash
 just backup                     # fetches a .nbdata into ./backups

@@ -1,0 +1,6 @@
+# Managed by ansible/roles/webdav — edits on the host are overwritten.
+#
+# dav_ext_lock_zone belongs to the http context, which a location snippet cannot
+# reach, so it lives here instead: Ubuntu's nginx.conf includes conf.d/*.conf
+# inside http. The matching `dav_ext_lock zone=webdav` is in the location block.
+dav_ext_lock_zone zone=webdav:{{ webdav_lock_zone_size }};

@@ -11,7 +11,7 @@ nginx in front of it and Postgres on a separate box.
 
 | | |
 |---|---|
-| `ansible/playbook.yml` | setup: node, nocobase, ciela-mcp, whisper, nginx. Never touches data |
+| `ansible/playbook.yml` | setup: node, nocobase, ciela-mcp, whisper, nginx, webdav. Never touches data |
 | `mcp_servers/` | the MCP servers the AI employees call, shipped to the box by the playbook |
 | `ansible/backup.yml` | take a backup and fetch it |
 | `ansible/restore.yml` | restore a backup, or the published CRM template |
@@ -39,6 +39,7 @@ Sign in with the `NOCOBASE_ROOT_*` credentials from `.env`.
 | nginx | reverse proxy on `:80`; TLS is terminated by Cloudflare before the tunnel |
 | Node | current LTS, installed by the `nodejs` role from the nodejs.org tarball |
 | Ciela MCP | `/data/ciela-mcp`, run by `ciela-mcp.service` on `127.0.0.1:8811`; gives the Siela AI employee its Bulgarian legislation lookup. Needs `CIELA_*` in `.env` |
+| WebDAV | `/data/webdav`, served by the same nginx at `/webdav/` with basic auth. No VPN and no open port — it arrives over the existing Cloudflare hostname. Accounts live in `/etc/nginx/webdav.htpasswd`, managed with `just webdav-user-*` |
 
 ---
 
@@ -168,6 +169,56 @@ all good
 | `just smoke` | load every admin page in a real browser and fail if one crashes the tab |
 | `just connect-warp` | join the Zero Trust network on its own |
 | `just write-ssh-key` | write the deploy key to disk |
+| `just webdav-users` | list the accounts that can mount the file share |
+| `just webdav-user-add NAME` | create a share account, or reset its password |
+| `just webdav-user-remove NAME` | revoke access; uploaded files are kept |
+
+### Managing share accounts
+
+```bash
+just webdav-user-add john       # prompts for a password, twice; never echoed
+just webdav-user-add jane       # each person gets their own account
+just webdav-users               # sorted, one per line: jane, then john
+just webdav-user-remove john    # type "john" at the prompt to confirm
+```
+
+`webdav-user-add` on a name that already exists resets that password and leaves
+every other account alone — that is how you rotate a forgotten one. It confirms
+the login against nginx before reporting success, so a broken account fails
+here rather than in someone's Finder.
+
+`webdav-user-remove` revokes access only; files john uploaded stay on the share,
+owned by `www-data` like every other upload.
+
+These reach the box over SSH, so off the home LAN they need WARP (`--lan` skips
+it when you are at home). The people *using* the share need none of that.
+
+### Mounting the file share
+
+`/webdav/` on the public hostname, with an account from `just webdav-user-add`.
+Nothing to install and no VPN — it is an ordinary HTTPS URL, so it works from
+anywhere the site works.
+
+```bash
+# macOS — or Finder, Go ▸ Connect to Server, then sign in as john
+open 'https://ownai.deepcraftstudio.com/webdav/'
+
+# Linux (davfs2) — prompts for john's password
+sudo mount -t davfs https://ownai.deepcraftstudio.com/webdav/ /mnt/share
+
+# Windows (PowerShell)
+net use Z: https://ownai.deepcraftstudio.com/webdav/ /user:john
+```
+
+**File size is capped, and not by nginx.** Cloudflare rejects request bodies
+over **100 MB** on Free and Pro, so that is the real upload ceiling for anything
+arriving through the hostname. Windows separately refuses to *download* files
+over ~50 MB until `FileSizeLimitInBytes` is raised in the registry
+(`HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`). On the home
+LAN, `http://192.168.1.5/webdav/` bypasses both.
+
+Every upload is owned by `www-data` on disk whichever account wrote it — WebDAV
+carries no per-user file ownership.
 
 These touch the database, and are deliberately not part of a deploy:
 

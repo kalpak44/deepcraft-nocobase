@@ -8,6 +8,16 @@
     update_cache: true
     cache_valid_time: 3600
 
+# Created here rather than by whichever role writes into it, so the vhost's
+# include always has a directory to glob even when nothing has populated it.
+- name: Create the directory for locations owned by other roles
+  ansible.builtin.file:
+    path: "{{ nginx_extra_locations_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Deploy site config
   ansible.builtin.template:
     src: site.conf.j2

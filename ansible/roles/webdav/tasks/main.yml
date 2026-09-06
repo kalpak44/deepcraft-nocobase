@@ -1,0 +1,125 @@
+---
+# Installs the WebDAV share and wires it into the nginx vhost the nginx role
+# owns. Accounts are runtime state and belong to `just webdav-user-*`; nothing
+# here writes to the password file beyond creating it empty, because CI applies
+# this playbook on every push to main.
+
+# nginx's built-in dav module has only the write verbs. PROPFIND — the one every
+# client needs to enumerate a directory, and therefore to mount at all — comes
+# from dav-ext. htpasswd is in apache2-utils; curl is here because the box ships
+# wget instead and the user recipes verify a login end to end.
+- name: Install the webdav module and the account tools
+  ansible.builtin.apt:
+    name:
+      - libnginx-mod-http-dav-ext
+      - apache2-utils
+      - curl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# The package drops a load_module line here. Checked explicitly so a renamed or
+# missing package fails with something readable, rather than as an "unknown
+# directive dav_ext_methods" from nginx -t further down.
+- name: Confirm the dav-ext module is enabled
+  ansible.builtin.stat:
+    path: /etc/nginx/modules-enabled/50-mod-http-dav-ext.conf
+  register: _dav_mod
+
+- name: Fail if the dav-ext module did not install
+  ansible.builtin.assert:
+    that: _dav_mod.stat.exists
+    fail_msg: >-
+      libnginx-mod-http-dav-ext is installed but no module is enabled in
+      /etc/nginx/modules-enabled — without it PROPFIND is unavailable and no
+      client can mount the share
+
+- name: Create the share directory
+  ansible.builtin.file:
+    path: "{{ webdav_dir }}"
+    state: directory
+    owner: "{{ webdav_owner }}"
+    group: "{{ webdav_owner }}"
+    mode: "0770"
+
+# On the same filesystem as the share on purpose — see the role's defaults.
+- name: Create the upload staging directory
+  ansible.builtin.file:
+    path: "{{ webdav_tmp }}"
+    state: directory
+    owner: "{{ webdav_owner }}"
+    group: "{{ webdav_owner }}"
+    mode: "0700"
+
+# force: false is what makes this safe to run against a box that already has
+# accounts — it creates the file when missing and never touches it otherwise.
+# state: touch would report changed on every run and rewrite the mtime.
+- name: Create the password file if it does not exist yet
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ webdav_htpasswd }}"
+    force: false
+    owner: root
+    group: "{{ webdav_owner }}"
+    mode: "0640"
+
+- name: Install the lock zone at http level
+  ansible.builtin.template:
+    src: lock-zone.conf.j2
+    dest: /etc/nginx/conf.d/webdav-lock.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx for webdav
+
+- name: Install the webdav location snippet
+  ansible.builtin.template:
+    src: webdav.conf.j2
+    dest: "{{ webdav_location_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx for webdav
+
+# Separate task rather than a template `validate:`, because neither file is a
+# complete configuration — nginx -t can only judge them once they are in place.
+# nginx keeps serving the previously loaded config until the reload below, so a
+# failure here leaves the site up.
+- name: Validate the nginx config before any reload
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Apply the reload now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# -T dumps the configuration nginx actually loaded, so this proves three things
+# at once: the module is live (the directive parsed), the snippet is included by
+# the vhost, and the share points where we think it does.
+- name: Read back the configuration nginx is running
+  ansible.builtin.command: nginx -T
+  changed_when: false
+  register: _nginx_dump
+
+- name: Fail if webdav is not in the running configuration
+  ansible.builtin.assert:
+    that:
+      - "'dav_ext_methods' in _nginx_dump.stdout"
+      - "'location ' ~ webdav_location ~ '/' in _nginx_dump.stdout"
+      - "'dav_ext_lock_zone zone=webdav' in _nginx_dump.stdout"
+    fail_msg: "nginx reloaded but the webdav location is not in its effective config"
+
+# The share must answer, and must answer 401. A 200 here would mean the whole
+# thing is readable without credentials, which is the one failure that would not
+# look like a failure from anywhere else.
+- name: Verify the share is published and demands credentials
+  ansible.builtin.uri:
+    url: "http://127.0.0.1{{ webdav_location }}/"
+    method: PROPFIND
+    status_code: 401
+  changed_when: false
+
+- name: Show what is being served
+  ansible.builtin.debug:
+    msg: >-
+      webdav at {{ webdav_location }}/ -> {{ webdav_dir }}, basic auth from
+      {{ webdav_htpasswd }}. Add an account with 'just webdav-user-add NAME'.

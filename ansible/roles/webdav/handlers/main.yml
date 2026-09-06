@@ -1,0 +1,7 @@
+---
+# Reload, not restart: nginx re-reads the whole configuration on reload, and a
+# restart would drop NocoBase's in-flight requests on the same vhost.
+- name: Reload nginx for webdav
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
