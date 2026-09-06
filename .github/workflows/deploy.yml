@@ -9,6 +9,8 @@ on:
     branches: [main]
     paths:
       - 'ansible/**'
+      # The ciela_mcp role ships these to the box, so a change here is a deploy.
+      - 'mcp_servers/**'
       - 'Justfile'
       - '.github/workflows/deploy.yml'
 
@@ -32,6 +34,8 @@ jobs:
       NOCOBASE_ROOT_EMAIL: ${{ secrets.NOCOBASE_ROOT_EMAIL }}
       NOCOBASE_ROOT_USERNAME: ${{ secrets.NOCOBASE_ROOT_USERNAME }}
       NOCOBASE_ROOT_PASSWORD: ${{ secrets.NOCOBASE_ROOT_PASSWORD }}
+      CIELA_USERNAME: ${{ secrets.CIELA_USERNAME }}
+      CIELA_PASSWORD: ${{ secrets.CIELA_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v2

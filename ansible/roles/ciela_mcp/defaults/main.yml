@@ -1,0 +1,39 @@
+---
+# The Ciela MCP server: a small node process that logs into web7.ciela.net and
+# exposes ciela_search / ciela_get_document over MCP, so the Siela AI employee in
+# NocoBase can quote Bulgarian legislation instead of answering from memory.
+
+# The source lives in the repository, not on the box — the role ships it. Given
+# relative to ansible/, which is where every play is run from.
+ciela_mcp_src: "{{ playbook_dir }}/../mcp_servers/ciela-mcp"
+
+# Listed rather than copied wholesale: the source directory picks up node_modules
+# and a server.log during local development, and neither belongs on the box.
+ciela_mcp_files:
+  - server.js
+  - cielaClient.js
+  - package.json
+  - package-lock.json
+
+# On /data, never /. The root volume is 20G and is not where software goes —
+# see the disk note in CLAUDE.md.
+ciela_mcp_dir: /data/ciela-mcp
+ciela_mcp_user: ciela-mcp
+
+# Loopback, not 0.0.0.0. The only client is NocoBase on this same box, and the
+# endpoint carries no authentication of its own — binding the LAN would publish
+# a Ciela subscription to anything that can reach the container.
+ciela_mcp_bind: 127.0.0.1
+ciela_mcp_port: 8811
+
+# Ciela's own base URL. Empty means the server's built-in default.
+ciela_mcp_base_url: ""
+
+# The subscription the server logs in with. No defaults on purpose — the role
+# asserts they are set. Locally they come from .env, in CI from repo secrets.
+ciela_mcp_username: "{{ lookup('env', 'CIELA_USERNAME') }}"
+ciela_mcp_password: "{{ lookup('env', 'CIELA_PASSWORD') }}"
+
+# It proxies a handful of HTTP calls and holds one JWT; anything above this is a
+# leak, and the box has 4G with no swap shared with NocoBase and whisper.
+ciela_mcp_memory_max: 300M

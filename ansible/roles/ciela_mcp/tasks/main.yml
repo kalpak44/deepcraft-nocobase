@@ -1,0 +1,109 @@
+---
+- name: Refuse to deploy without the Ciela subscription
+  ansible.builtin.assert:
+    that:
+      - ciela_mcp_username | length > 0
+      - ciela_mcp_password | length > 0
+    fail_msg: >-
+      missing configuration — CIELA_USERNAME and CIELA_PASSWORD must be set.
+      Locally they come from .env; in CI from repo secrets.
+    quiet: true
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ ciela_mcp_user }}"
+    home: "{{ ciela_mcp_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ ciela_mcp_dir }}"
+    state: directory
+    owner: "{{ ciela_mcp_user }}"
+    group: "{{ ciela_mcp_user }}"
+    mode: "0750"
+
+- name: Ship the server
+  ansible.builtin.copy:
+    src: "{{ ciela_mcp_src }}/{{ item }}"
+    dest: "{{ ciela_mcp_dir }}/{{ item }}"
+    owner: "{{ ciela_mcp_user }}"
+    group: "{{ ciela_mcp_user }}"
+    mode: "0640"
+  loop: "{{ ciela_mcp_files }}"
+  register: _source
+  notify: Restart ciela-mcp
+
+- name: Look for an installed dependency tree
+  ansible.builtin.stat:
+    path: "{{ ciela_mcp_dir }}/node_modules/.package-lock.json"
+  register: _deps
+
+# `npm ci` wipes and rebuilds node_modules every time it runs, which is both slow
+# and a restart the service does not need — so it only runs when the shipped
+# sources moved or nothing is installed yet. `ci` rather than `install` because
+# it installs exactly the committed lockfile and never rewrites it.
+- name: Install the dependencies
+  ansible.builtin.command:
+    cmd: npm ci --omit=dev
+    chdir: "{{ ciela_mcp_dir }}"
+  become_user: "{{ ciela_mcp_user }}"
+  environment:
+    HOME: "{{ ciela_mcp_dir }}"
+  when: _source.changed or not _deps.stat.exists
+  changed_when: true
+  notify: Restart ciela-mcp
+
+# Kept out of the unit file, which is world-readable: an EnvironmentFile can be
+# 0600 and readable only by the account the service runs as.
+- name: Write the credentials file
+  ansible.builtin.template:
+    src: ciela-mcp.env.j2
+    dest: "{{ ciela_mcp_dir }}/.env"
+    owner: "{{ ciela_mcp_user }}"
+    group: "{{ ciela_mcp_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart ciela-mcp
+
+- name: Deploy the ciela-mcp unit
+  ansible.builtin.template:
+    src: ciela-mcp.service.j2
+    dest: /etc/systemd/system/ciela-mcp.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart ciela-mcp
+
+- name: Start ciela-mcp and enable it at boot
+  ansible.builtin.systemd:
+    name: ciela-mcp
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# So a restart triggered by any of the templates above lands before the check
+# below, rather than after the role has already called itself a success.
+- name: Apply pending restarts now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# cielaClient.js throws at import when the credentials are missing, so a process
+# that answers here has both of them — the endpoint is not merely a listening
+# socket. Whether Ciela accepts them is only knowable by spending a login, which
+# a deploy has no business doing.
+- name: Confirm ciela-mcp answers
+  ansible.builtin.uri:
+    url: "http://{{ ciela_mcp_bind }}:{{ ciela_mcp_port }}/health"
+    status_code: 200
+  register: _ciela_check
+  until: _ciela_check.json.ok | default(false)
+  retries: 12
+  delay: 5
+
+- name: Report where ciela-mcp is listening
+  ansible.builtin.debug:
+    msg: >-
+      ciela-mcp on {{ ciela_mcp_bind }}:{{ ciela_mcp_port }}, MCP endpoint at
+      http://{{ ciela_mcp_bind }}:{{ ciela_mcp_port }}/mcp

@@ -1,0 +1,6 @@
+---
+- name: Restart ciela-mcp
+  ansible.builtin.systemd:
+    name: ciela-mcp
+    state: restarted
+    daemon_reload: true

@@ -1,0 +1,39 @@
+# Managed by ansible/roles/ciela_mcp — edits on the host are overwritten.
+[Unit]
+Description=Ciela MCP server
+After=network-online.target
+Wants=network-online.target
+# Same reasoning as nocobase.service: Restart=always spaces attempts wider than
+# the default 10s window, so without this a broken start loops forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ ciela_mcp_user }}
+Group={{ ciela_mcp_user }}
+WorkingDirectory={{ ciela_mcp_dir }}
+# The credentials, kept out of this file so they are not world-readable.
+EnvironmentFile={{ ciela_mcp_dir }}/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/node {{ ciela_mcp_dir }}/server.js
+Restart=always
+RestartSec=5
+
+# NocoBase already peaks around 700M on a 4G box with no swap, and whisper takes
+# a slice of what is left. This process proxies HTTP and should never grow.
+MemoryMax={{ ciela_mcp_memory_max }}
+
+# It reaches web7.ciela.net and answers on loopback; it writes nothing at all.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths={{ ciela_mcp_dir }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ciela-mcp
+
+[Install]
+WantedBy=multi-user.target

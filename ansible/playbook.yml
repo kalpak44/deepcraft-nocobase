@@ -15,8 +15,11 @@
   # nginx is last because it verifies itself by proxying to a running app.
   # whisper comes after nocobase, so a first run builds it against a box that is
   # already serving, and its ~10-minute build cannot delay the application.
+  # ciela_mcp goes before it for the same reason in reverse: it is seconds of
+  # work, and NocoBase's Siela employee is broken until it is running.
   roles:
     - nodejs
     - nocobase
+    - ciela_mcp
     - whisper
     - nginx
