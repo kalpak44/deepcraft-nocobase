@@ -54,6 +54,36 @@ Facts that were expensive to establish. Check them before changing the
   installation those log `Cannot find plugin` during migration and their menu
   entries are absent. Expected, and documented by NocoBase.
 
+## AI employees and MCP
+
+Nothing here has a UI-free API in the docs; all of it was read out of
+`@nocobase/plugin-ai` and `@nocobase/ai` on the box. Both are configured over
+the ordinary REST API with the root token — there is no `nb` env for this host.
+
+- The two collections are `aiMcpClients` (one row per MCP server, primary key
+  `name`) and `aiEmployees` (primary key `username`). `aiMcpClients:update`
+  then `:rebuildClient` is what makes a changed URL take effect;
+  `:testConnection` takes the whole record as its body and reports the tool
+  list without saving anything.
+- `transport` is `stdio`, `sse` or `http`. **`http` means streamable HTTP** —
+  it is the one to use for a `/mcp` endpoint, `sse` is the older protocol.
+- An employee's prompt lives in `about`, not `defaultPrompt`. Without
+  `modelSettings` naming an `llmServices` row it cannot answer at all — the
+  employee looks configured and simply fails.
+- Tools reach an employee as **`mcp-<serverName>-<toolName>`**; that is the
+  name to put in `skillSettings.tools`, and `aiMcpClients:listTools` prints it.
+- **MCP tool permissions are in-memory only.** They default to `ASK` unless the
+  raw tool name starts with `get`, `updateToolPermission` does not persist
+  them, and every restart of `nocobase.service` resets whatever was set — so an
+  employee that auto-called its tools yesterday will start asking again after a
+  deploy. `skillSettings.tools[].autoCall` does not override this: MCP tools
+  register with `scope: GENERAL`, and `autoCall` is only consulted for
+  `scope: CUSTOM`.
+- `aiConversations:sendMessages` **needs an `X-Timezone` header**. Without one,
+  resolving the date variables in the system prompt dies with a bare
+  `m.startOf is not a function` before the model is ever called — for every
+  employee, which makes it look like the employee is broken.
+
 ## nginx
 
 - Reverse proxy only. TLS is terminated by Cloudflare before the tunnel, so

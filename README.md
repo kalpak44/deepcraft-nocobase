@@ -11,7 +11,8 @@ nginx in front of it and Postgres on a separate box.
 
 | | |
 |---|---|
-| `ansible/playbook.yml` | setup: node, nocobase, nginx. Never touches data |
+| `ansible/playbook.yml` | setup: node, nocobase, ciela-mcp, whisper, nginx. Never touches data |
+| `mcp_servers/` | the MCP servers the AI employees call, shipped to the box by the playbook |
 | `ansible/backup.yml` | take a backup and fetch it |
 | `ansible/restore.yml` | restore a backup, or the published CRM template |
 | `ansible/upgrade.yml` | move to a new release and run its migrations |
@@ -37,6 +38,7 @@ Sign in with the `NOCOBASE_ROOT_*` credentials from `.env`.
 | Database | external Postgres 18 at `192.168.1.4:5432` |
 | nginx | reverse proxy on `:80`; TLS is terminated by Cloudflare before the tunnel |
 | Node | current LTS, installed by the `nodejs` role from the nodejs.org tarball |
+| Ciela MCP | `/data/ciela-mcp`, run by `ciela-mcp.service` on `127.0.0.1:8811`; gives the Siela AI employee its Bulgarian legislation lookup. Needs `CIELA_*` in `.env` |
 
 ---
 
