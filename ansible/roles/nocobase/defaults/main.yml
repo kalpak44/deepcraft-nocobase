@@ -20,6 +20,13 @@ nocobase_app_port: 13000
 nocobase_app_env: production
 nocobase_timezone: Etc/UTC
 
+# Where uploaded files land. Under the app directory, so on /data and not the
+# 20G root — but stated rather than inferred: the plugin's own fallback is a
+# path resolved against the working directory, which only happens to be right.
+# The storage row in the database overrides this (options.documentRoot), so
+# changing it here means changing it there too.
+nocobase_uploads_dir: "{{ nocobase_app_dir }}/storage/uploads"
+
 # Secrets — no defaults on purpose, the play asserts they are set.
 nocobase_app_key: "{{ lookup('env', 'NOCOBASE_APP_KEY') }}"
 nocobase_root_email: "{{ lookup('env', 'NOCOBASE_ROOT_EMAIL') }}"
