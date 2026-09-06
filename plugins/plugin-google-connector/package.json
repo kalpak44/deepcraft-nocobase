@@ -25,6 +25,7 @@
   },
   "files": [
     "dist",
+    "assets",
     "client.js",
     "client.d.ts",
     "client-v2.js",
