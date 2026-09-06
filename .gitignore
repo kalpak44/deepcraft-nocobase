@@ -29,3 +29,9 @@ id_ed25519*
 /plugins/*/app/
 /plugins/*/dist/
 /plugins/*/node_modules/
+
+# Nothing reads these: the build runs yarn inside the NocoBase workspace, which
+# ignores package-lock.json. Committing one only feeds Dependabot the pinned
+# @nocobase/* dependency tree, whose transitive advisories cannot be fixed
+# without floating the version that must match the box.
+/plugins/*/package-lock.json
