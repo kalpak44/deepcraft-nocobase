@@ -25,7 +25,7 @@ id_ed25519*
 /mcp_servers/*/server.log
 
 # Plugin build artefacts — `app/` is a whole NocoBase source tree that
-# scripts/build.sh downloads, `dist/` is the packed tarball the release carries
+# plugins/build.sh downloads, `dist/` is the packed tarball the release carries
 /plugins/*/app/
 /plugins/*/dist/
 /plugins/*/node_modules/

@@ -221,7 +221,7 @@ just build-plugin plugin-google-connector
 # → dist/deepcraft-plugin-google-connector-<version>.tgz
 ```
 
-`scripts/build.sh` does the work:
+`plugins/build.sh`, shared by every plugin here, does the work:
 
 1. Downloads a pinned NocoBase source tree into `./app` on first run, so the
    plugin compiles against the runtime it will be installed into.

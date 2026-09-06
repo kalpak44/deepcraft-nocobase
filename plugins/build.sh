@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 #
-# Build @deepcraft/plugin-google-connector into ./dist/*.tgz — a single-file pipeline.
+# Build a plugin under ./plugins into its own dist/*.tgz — a single-file
+# pipeline shared by every plugin here.
 #
-# On first run this bootstraps a local NocoBase source tree under ./app/source
-# (via `nb source download`) so the NocoBase build toolchain (@nocobase/build)
-# can compile our plugin against the runtime versions we target.
+#   bash plugins/build.sh <plugin-directory-name>
+#
+# Prefer `just build-plugin <name>`, which checks the toolchain first.
+#
+# On first run this bootstraps a local NocoBase source tree under
+# <plugin>/app/source (via `nb source download`) so the NocoBase build
+# toolchain (@nocobase/build) can compile the plugin against the runtime
+# version we target.
 #
 # The NocoBase version is pinned so builds are reproducible and produce an
 # externalVersion.js that matches the deployed instance runtime. Override the
@@ -18,12 +24,27 @@
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$REPO_ROOT/app"
+PLUGINS_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_DIR_NAME="${1:-}"
+
+if [ -z "$PLUGIN_DIR_NAME" ]; then
+  echo "usage: bash plugins/build.sh <plugin-directory-name>" >&2
+  echo "       available:" >&2
+  (cd "$PLUGINS_ROOT" && ls -d */ 2>/dev/null | sed 's#/##; s#^#         #') >&2
+  exit 1
+fi
+
+PLUGIN_ROOT="$PLUGINS_ROOT/$PLUGIN_DIR_NAME"
+if [ ! -f "$PLUGIN_ROOT/package.json" ]; then
+  echo "error: no plugin at plugins/$PLUGIN_DIR_NAME" >&2
+  exit 1
+fi
+
+APP_DIR="$PLUGIN_ROOT/app"
 SOURCE_DIR="$APP_DIR/source"
-PLUGIN_NAME="$(node -pe "require('$REPO_ROOT/package.json').name")"
+PLUGIN_NAME="$(node -pe "require('$PLUGIN_ROOT/package.json').name")"
 TARGET_DIR="$SOURCE_DIR/packages/plugins/$PLUGIN_NAME"
-DIST_DIR="$REPO_ROOT/dist"
+DIST_DIR="$PLUGIN_ROOT/dist"
 
 # Pin to the deployed instance's NocoBase runtime so externalVersion.js matches
 # what the plugin manager expects (see "Dependencies compatibility check").
@@ -34,6 +55,8 @@ if ! command -v nb >/dev/null 2>&1; then
   echo "       install it with:   npm i -g @nocobase/cli" >&2
   exit 1
 fi
+
+echo "==> building $PLUGIN_NAME from plugins/$PLUGIN_DIR_NAME"
 
 # --- 1. Ensure NocoBase source scaffold exists (download only on first run)-
 if [ ! -f "$SOURCE_DIR/package.json" ]; then
@@ -82,7 +105,7 @@ rsync -a --delete \
   --exclude '.github' \
   --exclude '.idea' \
   --exclude '.vscode' \
-  "$REPO_ROOT/" "$TARGET_DIR/"
+  "$PLUGIN_ROOT/" "$TARGET_DIR/"
 
 # --- 4. yarn install to register the plugin in the workspace ----------------
 (cd "$SOURCE_DIR" && yarn install --ignore-engines)

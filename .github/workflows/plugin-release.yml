@@ -115,7 +115,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/yarn
-          key: yarn-${{ matrix.plugin }}-${{ hashFiles(format('plugins/{0}/scripts/build.sh', matrix.plugin), format('plugins/{0}/package.json', matrix.plugin)) }}
+          key: yarn-${{ matrix.plugin }}-${{ hashFiles('plugins/build.sh', format('plugins/{0}/package.json', matrix.plugin)) }}
           restore-keys: |
             yarn-${{ matrix.plugin }}-
 

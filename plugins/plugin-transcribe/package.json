@@ -35,7 +35,7 @@
     "package.json"
   ],
   "scripts": {
-    "build": "bash scripts/build.sh",
+    "build": "bash ../build.sh plugin-transcribe",
     "clean": "rm -rf dist",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\""

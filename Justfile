@@ -401,16 +401,15 @@ build-plugin name:
     set -euo pipefail
     dir="plugins/{{name}}"
     [ -d "$dir" ] || { echo "no such plugin: $dir" >&2; exit 1; }
-    [ -f "$dir/scripts/build.sh" ] || { echo "$dir has no scripts/build.sh" >&2; exit 1; }
 
-    # build.sh drives the NocoBase toolchain, which is yarn 1.22 only — berry
-    # cannot resolve the workspace it builds in.
+    # plugins/build.sh drives the NocoBase toolchain, which is yarn 1.22 only —
+    # berry cannot resolve the workspace it builds in.
     command -v yarn >/dev/null 2>&1 || { echo "yarn 1.22.x is required" >&2; exit 1; }
     command -v nb   >/dev/null 2>&1 || { echo "the nb CLI is required: npm i -g @nocobase/cli" >&2; exit 1; }
 
     # The first run downloads a whole NocoBase source tree into $dir/app, which
     # takes minutes and gigabytes. Every later run reuses it.
-    bash "$dir/scripts/build.sh"
+    bash plugins/build.sh "{{name}}"
 
 # The version in the plugin's package.json names the release, so pushing a
 # change without bumping it replaces that release in place — the tag moves to
