@@ -3,6 +3,7 @@
 
 # Editors
 .idea/
+.vscode/
 
 # Ansible
 *.retry
@@ -12,6 +13,13 @@
 id_rsa*
 id_ed25519*
 .env
+.env.*
+!.env.example
+
+# Anything a build or a local run leaves behind, anywhere in the tree
+*.log
+*.tsbuildinfo
+coverage/
 
 # Fetched backups — real customer data, and large
 /backups/
@@ -22,13 +30,13 @@ id_ed25519*
 
 # Left behind by running an MCP server locally — ansible ships the sources only
 /mcp_servers/*/node_modules/
-/mcp_servers/*/server.log
 
 # Plugin build artefacts — `app/` is a whole NocoBase source tree that
 # plugins/build.sh downloads, `dist/` is the packed tarball the release carries
 /plugins/*/app/
 /plugins/*/dist/
 /plugins/*/node_modules/
+/plugins/*/storage/
 
 # Nothing reads these: the build runs yarn inside the NocoBase workspace, which
 # ignores package-lock.json. Committing one only feeds Dependabot the pinned
