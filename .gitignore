@@ -19,3 +19,7 @@ id_ed25519*
 # Installed on demand by `just smoke`, never committed
 /scripts/node_modules/
 /scripts/package-lock.json
+
+# Left behind by running an MCP server locally — ansible ships the sources only
+/mcp_servers/*/node_modules/
+/mcp_servers/*/server.log
