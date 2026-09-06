@@ -1,0 +1,129 @@
+name: Plugin release
+
+# Every directory under plugins/ ships as a .tgz you upload through the NocoBase
+# plugin manager. The version in a plugin's package.json names its release:
+# pushing a change rebuilds the tarball and replaces the release for that
+# version, so the download link never goes stale. Bump the version to start a
+# new one.
+#
+# All the logic lives in the Justfile, so CI runs exactly what a developer runs:
+#
+#   just release-plugin plugin-transcribe
+on:
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: Plugin directory to release, or "all"
+        default: all
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/**'
+      - '.github/workflows/plugin-release.yml'
+
+# Releasing deletes and recreates a tag. Two runs overlapping on the same plugin
+# would race for it, so they queue instead — and queue rather than cancel,
+# because a canceled run can leave a plugin with no release at all.
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      plugins: ${{ steps.pick.outputs.plugins }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The push diff needs the commit the branch moved from.
+          fetch-depth: 0
+
+      - name: Pick the plugins to release
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          SELECTED: ${{ inputs.plugin }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          all="$(cd plugins && ls -d */ | sed 's#/##')"
+
+          if [ "$EVENT" != "push" ]; then
+            if [ -z "$SELECTED" ] || [ "$SELECTED" = all ]; then
+              picked="$all"
+            elif [ -d "plugins/$SELECTED" ]; then
+              picked="$SELECTED"
+            else
+              echo "no such plugin: plugins/$SELECTED" >&2
+              exit 1
+            fi
+          elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            # First push to the branch, or a force-push that dropped the old
+            # tip — there is nothing to diff against, so rebuild everything.
+            echo "no usable diff base, releasing every plugin"
+            picked="$all"
+          else
+            files="$(git diff --name-only "$BEFORE" "$AFTER")"
+            if printf '%s\n' "$files" | grep -qxF '.github/workflows/plugin-release.yml'; then
+              # The release mechanism itself changed, so prove it on both.
+              picked="$all"
+            else
+              picked=""
+              for p in $all; do
+                if printf '%s\n' "$files" | grep -q "^plugins/$p/"; then
+                  picked="$picked$p"$'\n'
+                fi
+              done
+            fi
+          fi
+
+          if [ -z "${picked//[[:space:]]/}" ]; then
+            json='[]'
+          else
+            json="$(printf '%s\n' $picked | jq -R . | jq -sc .)"
+          fi
+          echo "releasing: $json"
+          echo "plugins=$json" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: discover
+    if: needs.discover.outputs.plugins != '[]'
+    runs-on: ubuntu-latest
+    # A cold build downloads and installs a full NocoBase source tree.
+    timeout-minutes: 90
+    strategy:
+      # One plugin failing to build should not withhold the other's release.
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.discover.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: extractions/setup-just@v2
+
+      # The source tree itself is too large to cache usefully; its yarn
+      # downloads are not, and they are most of the wall clock on a rerun.
+      - name: Cache the yarn store
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/yarn
+          key: yarn-${{ matrix.plugin }}-${{ hashFiles(format('plugins/{0}/scripts/build.sh', matrix.plugin), format('plugins/{0}/package.json', matrix.plugin)) }}
+          restore-keys: |
+            yarn-${{ matrix.plugin }}-
+
+      - name: Install the nb CLI
+        run: npm install -g @nocobase/cli
+
+      - name: Build and release
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          GH_TOKEN: ${{ github.token }}
+        run: just release-plugin "$PLUGIN"

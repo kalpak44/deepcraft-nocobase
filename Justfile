@@ -40,6 +40,10 @@ help:
     @echo "  just restore-crm-template  install the NocoBase CRM 2.0 template"
     @echo "  just upgrade VERSION       move to a new release and migrate"
     @echo ""
+    @echo "plugins — built and released from ./plugins, nothing to do with the box"
+    @echo "  just build-plugin NAME     build plugins/NAME into a .tgz"
+    @echo "  just release-plugin NAME   build, then replace its GitHub release"
+    @echo ""
     @echo "extras"
     @echo "  just connect-warp          join the Zero Trust network (--force to re-enrol)"
     @echo "  just write-ssh-key         write the deploy key to {{key_file}}"
@@ -390,6 +394,70 @@ smoke:
     node scripts/node_modules/playwright/cli.js install --only-shell chromium
 
     node scripts/smoke.mjs
+
+# Build plugins/NAME into a .tgz under plugins/NAME/dist.
+build-plugin name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="plugins/{{name}}"
+    [ -d "$dir" ] || { echo "no such plugin: $dir" >&2; exit 1; }
+    [ -f "$dir/scripts/build.sh" ] || { echo "$dir has no scripts/build.sh" >&2; exit 1; }
+
+    # build.sh drives the NocoBase toolchain, which is yarn 1.22 only — berry
+    # cannot resolve the workspace it builds in.
+    command -v yarn >/dev/null 2>&1 || { echo "yarn 1.22.x is required" >&2; exit 1; }
+    command -v nb   >/dev/null 2>&1 || { echo "the nb CLI is required: npm i -g @nocobase/cli" >&2; exit 1; }
+
+    # The first run downloads a whole NocoBase source tree into $dir/app, which
+    # takes minutes and gigabytes. Every later run reuses it.
+    bash "$dir/scripts/build.sh"
+
+# The version in the plugin's package.json names the release, so pushing a
+# change without bumping it replaces that release in place — the tag moves to
+# the current commit and the download link stays the same. Bump the version to
+# start a new release.
+#
+# Build plugins/NAME and replace its GitHub release.
+release-plugin name: (build-plugin name)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v gh >/dev/null 2>&1 || { echo "the gh CLI is required: https://cli.github.com" >&2; exit 1; }
+
+    dir="plugins/{{name}}"
+    pkg="$(node -pe "require('./$dir/package.json').name")"
+    version="$(node -pe "require('./$dir/package.json').version")"
+    runtime="$(node -pe "require('./$dir/package.json').nocobase.supportedVersions.join(', ')")"
+    tag="{{name}}-v${version}"
+
+    # build.sh clears dist/ before packing, so anything else here means the
+    # build did not finish and the asset would be stale.
+    shopt -s nullglob
+    tarballs=("$dir"/dist/*.tgz)
+    shopt -u nullglob
+    if [ "${#tarballs[@]}" -ne 1 ]; then
+      echo "expected exactly one tarball in $dir/dist, found ${#tarballs[@]}" >&2
+      exit 1
+    fi
+    tarball="${tarballs[0]}"
+
+    # Delete rather than edit: `gh release edit` cannot move a tag, so an
+    # in-place update would leave the release pointing at the old commit.
+    if gh release view "$tag" >/dev/null 2>&1; then
+      echo "-> $tag already exists, replacing it"
+      gh release delete "$tag" --yes --cleanup-tag
+    fi
+
+    echo "-> publishing $tag from $(basename "$tarball")"
+    gh release create "$tag" "$tarball" \
+      --target "$(git rev-parse HEAD)" \
+      --title "$pkg $version" \
+      --notes "$(printf '%s\n' \
+        "\`$pkg\` $version, built against NocoBase $runtime." \
+        "" \
+        "Install it in **Plugin manager → Add new plugin → Upload** with the" \
+        "\`.tgz\` below, or drop the file into \`storage/plugins/\` on the box." \
+        "" \
+        "Rebuilt from \`$(git rev-parse --short HEAD)\`.")"
 
 # Tail the application log.
 logs mode="": write-ssh-key
