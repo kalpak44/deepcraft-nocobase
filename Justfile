@@ -41,6 +41,9 @@ lex_mcp_port := env_var_or_default("LEX_MCP_PORT", "8814")
 # ansible/roles/browser/defaults/main.yml — the recipes below manage the
 # accounts in that password file, and the role is what points nginx at it.
 browser_htpasswd := env_var_or_default("BROWSER_HTPASSWD", "/etc/nginx/browser.htpasswd")
+# Token access to that page. nginx reads this as a map, so the recipes below
+# reload nginx after changing it — unlike htpasswd, which it re-reads per request.
+browser_tokens := env_var_or_default("BROWSER_TOKENS", "/etc/nginx/browser-tokens.map")
 browser_location := env_var_or_default("BROWSER_LOCATION", "/browser")
 
 # Show the available commands.
@@ -71,7 +74,8 @@ help:
     @echo "browser — who may take over the browser to pass a Cloudflare check"
     @echo "  just browser-users         list the accounts that can open the takeover page"
     @echo "  just browser-user-add NAME create an account, or reset its password"
-    @echo "  just browser-user-remove NAME  revoke access"
+    @echo "  just browser-user-remove NAME  revoke access (password and token)"
+    @echo "  just browser-link NAME     print that account's token takeover link"
     @echo "  just logs-browser          tail the Chrome, display and VNC journals"
     @echo ""
     @echo "webdav — who may mount the file share"
@@ -787,25 +791,52 @@ browser-user-add name mode="": write-ssh-key
     set -eu
     name='$name'
     file='{{browser_htpasswd}}'
+    tokens='{{browser_tokens}}'
     loc='{{browser_location}}'
     pw=\$(printf '%s' '$pw_b64' | base64 -d)
     [ -f "\$file" ] || { echo "no password file at \$file - run 'just deploy-ansible' first" >&2; exit 1; }
     # -i reads the password from stdin. Never -c, which would truncate the file
     # and delete every other account. -B is bcrypt.
     printf '%s' "\$pw" | htpasswd -B -i "\$file" "\$name" >/dev/null 2>&1
+
+    # The same credential as a token, for the link Lexy hands out. Written as an
+    # nginx map entry keyed on the base64 string. Rewritten in place rather than
+    # appended, so resetting a password replaces the old token instead of
+    # leaving it valid — which would make a password reset not actually revoke
+    # anything.
+    tok=\$(printf '%s:%s' "\$name" "\$pw" | base64 | tr -d '\n')
+    umask 077
+    tmp=\$(mktemp)
+    trap 'rm -f "\$tmp" "\$rc"' EXIT
+    # Drop any existing line for this account, then add the current one. The
+    # comment carries the name, since the token itself is opaque.
+    grep -v " # \$name\$" "\$tokens" 2>/dev/null > "\$tmp" || true
+    printf '"%s" 1; # %s\n' "\$tok" "\$name" >> "\$tmp"
+    cat "\$tmp" > "\$tokens"
+    chown root:www-data "\$tokens"; chmod 640 "\$tokens"
+
+    # nginx reads a map at load time, unlike htpasswd which it re-reads per
+    # request — so a new token does nothing until this reload. Validate first:
+    # a broken map would take the whole vhost, NocoBase included, down.
+    nginx -t >/dev/null 2>&1 || { echo "nginx config invalid after writing the token" >&2; exit 1; }
+    systemctl reload nginx
+
     # Proves the account works through nginx, not merely that a line was written:
     # a wrong file mode or an unsupported hash both look fine on disk. See the
     # note in webdav-user-add for why the credentials go in a config file as a
     # pre-encoded header rather than on curl's command line.
-    umask 077
     rc=\$(mktemp)
-    trap 'rm -f "\$rc"' EXIT
-    printf 'header = "Authorization: Basic %s"\n' \
-      "\$(printf '%s:%s' "\$name" "\$pw" | base64 | tr -d '\n')" > "\$rc"
+    printf 'header = "Authorization: Basic %s"\n' "\$tok" > "\$rc"
     code=\$(curl -K "\$rc" -s -o /dev/null -w '%{http_code}' "http://127.0.0.1\$loc/vnc.html")
     [ "\$code" = 200 ] || { echo "account written but nginx answered \$code, expected 200" >&2; exit 1; }
+
+    # And that the token route works too, which is a different code path: the
+    # entry point must now redirect rather than challenge.
+    tcode=\$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1\$loc/?token=\$tok")
+    [ "\$tcode" = 302 ] || { echo "token login answered \$tcode, expected 302" >&2; exit 1; }
     REMOTE
-    echo "$name can now open the takeover page (verified against nginx)"
+    echo "$name can now open the takeover page, by password or by token link"
+    echo "print the link with: just browser-link $name"
 
 # Revoke access to the takeover page.
 browser-user-remove name mode="": write-ssh-key
@@ -817,15 +848,46 @@ browser-user-remove name mode="": write-ssh-key
     read -r -p "Type the username to continue: " answer
     [ "$answer" = "$name" ] || { echo "aborted" >&2; exit 1; }
     [ "{{mode}}" = "--lan" ] || just connect-warp
-    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s "$name" "{{browser_htpasswd}}" <<'REMOTE'
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s "$name" "{{browser_htpasswd}}" "{{browser_tokens}}" <<'REMOTE'
     set -eu
-    name="$1"; file="$2"
+    name="$1"; file="$2"; tokens="$3"
     cut -d: -f1 "$file" | grep -qx "$name" || { echo "no such account: $name" >&2; exit 1; }
     htpasswd -D "$file" "$name" >/dev/null 2>&1
     cut -d: -f1 "$file" | grep -qx "$name" && { echo "delete did not take effect" >&2; exit 1; }
+
+    # The token is a second credential for the same account, so revoking the
+    # password without it would leave every link Lexy ever sent still working.
+    if [ -f "$tokens" ]; then
+      umask 077
+      tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+      grep -v " # $name\$" "$tokens" > "$tmp" || true
+      cat "$tmp" > "$tokens"
+      chown root:www-data "$tokens"; chmod 640 "$tokens"
+      grep -q " # $name\$" "$tokens" && { echo "token revoke did not take effect" >&2; exit 1; }
+      # nginx only re-reads a map on reload, so until this the token still works.
+      nginx -t >/dev/null 2>&1 || { echo "nginx config invalid after revoking the token" >&2; exit 1; }
+      systemctl reload nginx
+    fi
     exit 0
     REMOTE
-    echo "$name can no longer open the takeover page"
+    echo "$name can no longer open the takeover page, by password or by token"
+
+# Print the takeover link for an account, token included.
+#
+# Handing this out is handing out the account's password in a URL — it is the
+# same bytes basic auth would send, and it does not expire. Prefer letting Lexy
+# produce the link in a conversation, where at least it is scoped to the person
+# who asked. See the note atop ansible/roles/browser/templates/browser-token.conf.j2.
+browser-link name mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name='{{name}}'
+    [[ "$name" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || { echo "invalid username '$name'" >&2; exit 1; }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    tok=$(ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
+      "grep ' # $name\$' '{{browser_tokens}}' 2>/dev/null | tail -1 | cut -d'\"' -f2")
+    [ -n "$tok" ] || { echo "no token for '$name' — create one with 'just browser-user-add $name'" >&2; exit 1; }
+    echo "${NOCOBASE_PUBLIC_URL:-https://ownai.deepcraftstudio.com}{{browser_location}}/?token=$tok"
 
 # Tail the browser stack's journals, interleaved.
 logs-browser mode="": write-ssh-key

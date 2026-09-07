@@ -40,6 +40,11 @@ jobs:
       # password of its own, which is the intended default; the takeover page's
       # nginx basic auth is the boundary.
       BROWSER_VNC_PASSWORD: ${{ secrets.BROWSER_VNC_PASSWORD }}
+      # The account Lexy puts in the takeover link. Unset means she hands out the
+      # plain URL and the person signs in themselves — a safe fallback, not a
+      # failure. Both are needed for a token to be derived.
+      BROWSER_TAKEOVER_USER: ${{ secrets.BROWSER_TAKEOVER_USER }}
+      BROWSER_TAKEOVER_PASSWORD: ${{ secrets.BROWSER_TAKEOVER_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v2

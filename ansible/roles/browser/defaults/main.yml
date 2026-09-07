@@ -163,6 +163,39 @@ browser_location_file: /etc/nginx/locations.d/browser.conf
 browser_htpasswd: /etc/nginx/browser.htpasswd
 browser_realm: "deepcraft browser"
 
+# Token access, so the link Lexy hands someone opens the browser without them
+# stopping to hunt for a password while a challenge is waiting.
+#
+# A token is base64("user:password") — the same bytes basic auth would send, so
+# it is a permanent credential living in a URL. Read the long note at the top of
+# templates/browser-token.conf.j2 before changing any of this; it explains where
+# such a URL ends up and which parts of this design are load-bearing.
+#
+# Runtime state, like browser_htpasswd and for the same reason: written by
+# `just browser-user-add`, never by the playbook. Unlike htpasswd, nginx reads a
+# map at load time, so adding an account has to reload nginx — the recipe does.
+browser_tokens_file: /etc/nginx/browser-tokens.map
+
+# Where the http-context maps and the query-stripped log format go. conf.d is
+# included inside http by Ubuntu's nginx.conf.
+browser_token_conf: /etc/nginx/conf.d/browser-token.conf
+
+# The token is exchanged for this cookie on the first request, so it never
+# reaches vnc.html, the websocket, or a subresource Referer.
+browser_token_cookie: browser_token
+
+# How long that cookie lasts, in seconds. 12 hours: long enough to clear a
+# challenge and keep watching, short enough that a shared screen or a borrowed
+# laptop does not stay logged in indefinitely. The token itself does not expire
+# — only `just browser-user-remove NAME` revokes it.
+browser_token_ttl: 43200
+
+# Mark the cookie Secure. Correct for the Cloudflare hostname, which is the only
+# place a takeover link is ever handed out. It means the cookie is not set over
+# plain http on the LAN; that path is unaffected and simply uses the password
+# prompt. Set false only if you want token links to work over http.
+browser_token_cookie_secure: true
+
 # The viewer holds one websocket open for as long as someone is watching, and a
 # person solving a challenge may sit on the page for minutes. nginx's default
 # 60s read timeout would drop the stream mid-session.

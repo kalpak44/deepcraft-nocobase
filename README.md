@@ -204,17 +204,36 @@ lex.bg  →  Cloudflare challenge?
              └── yes → Lexy stops and hands the user a URL
 ```
 
-When she is blocked, Lexy will ask someone to open
-<https://ownai.deepcraftstudio.com/browser/>, sign in with a `browser-user-add`
-account, click the "Verify you are human" checkbox in the live window, and say
-when it is done. The clearance is kept in the browser profile and survives a
-restart of Chrome and of both MCP servers, so this is rare rather than routine.
+When she is blocked, Lexy hands someone a link to the live browser window, they
+click the "Verify you are human" checkbox, and tell her it is done. The
+clearance is kept in the browser profile and survives a restart of Chrome and of
+both MCP servers, so this is rare rather than routine.
+
+The link is a one-click one. If `BROWSER_TAKEOVER_USER` and
+`BROWSER_TAKEOVER_PASSWORD` are set in `.env`, the deploy gives Lexy
+`base64("user:password")` and she writes the link as markdown — the text you see
+is the plain `https://ownai.deepcraftstudio.com/browser/`, while the target
+carries `?token=…`, so nobody hunts for a password with a challenge waiting.
+Leave those two empty and she hands out the plain URL and you sign in yourself.
+
+**That token is the account's password in a URL and it does not expire.** It ends
+up in the NocoBase conversation and anywhere that message is forwarded. nginx
+reads it once, at `/browser/`, and swaps it for an `HttpOnly` cookie, so it never
+reaches the viewer, the websocket or a Referer, and that one request is logged
+without its query string. Even so, give the link its own account rather than
+sharing a person's, so it can be rotated without locking anyone out. Revoke with
+`just browser-user-remove NAME`, which drops the password *and* the token.
 
 ```bash
 just browser-user-add anna      # prompts for a password, twice; never echoed
+just browser-link anna          # print anna's token link (this prints a secret)
 just lexy-status                # is anything blocking the browser right now?
 just lexy-employee              # also how a changed prompt gets applied
 ```
+
+Adding or revoking an account reloads nginx: it re-reads `htpasswd` per request
+but reads the token map only at load time. The recipes run `nginx -t` first, so a
+bad map cannot take the vhost down with it.
 
 `lexy-status` is worth knowing: it asks the page what it is, so one command
 tells "the stack is down" apart from "a challenge is waiting for a person" —

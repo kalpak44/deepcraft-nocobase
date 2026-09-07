@@ -51,6 +51,29 @@ lex_mcp_upstream_port: 8813
 # quotes the wrong URL at someone who then cannot find the browser.
 lex_mcp_takeover_url: "https://ownai.deepcraftstudio.com/browser/"
 
+# The credential Lexy puts in the takeover *link*, so a person clears a
+# challenge by clicking rather than by going to find a password. base64 of
+# "user:password" for an account that may open the takeover page — the same
+# bytes basic auth would send.
+#
+# Derived from .env rather than stored separately, because those two variables
+# already record the account the recipes create. Empty means Lexy hands out the
+# plain URL and the person signs in themselves, which is the safer behaviour and
+# why there is no default here.
+#
+# Understand what this does before setting it: it puts a non-expiring credential
+# into an AI message, which lands in the NocoBase conversation and anywhere that
+# message is forwarded. The long note atop
+# ansible/roles/browser/templates/browser-token.conf.j2 covers the mitigations
+# and their limits. Giving the link its own account, separate from a person's,
+# is the cheapest way to keep it rotatable.
+lex_mcp_takeover_user: "{{ lookup('env', 'BROWSER_TAKEOVER_USER') }}"
+lex_mcp_takeover_password: "{{ lookup('env', 'BROWSER_TAKEOVER_PASSWORD') }}"
+lex_mcp_takeover_token: >-
+  {{ (lex_mcp_takeover_user ~ ':' ~ lex_mcp_takeover_password) | b64encode
+     if (lex_mcp_takeover_user | length > 0 and lex_mcp_takeover_password | length > 0)
+     else '' }}
+
 # It holds one MCP session to playwright-mcp and slices page text. The pages
 # themselves live in Chrome's memory, not here.
 lex_mcp_memory_max: 300M

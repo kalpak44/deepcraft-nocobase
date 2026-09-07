@@ -51,6 +51,29 @@
   changed_when: true
   notify: Restart lex-mcp
 
+# The takeover token, if one is configured. In its own 0600 file rather than in
+# the unit, which is world-readable.
+- name: Write the takeover token file
+  ansible.builtin.template:
+    src: lex-mcp.env.j2
+    dest: "{{ lex_mcp_dir }}/.env"
+    owner: "{{ lex_mcp_user }}"
+    group: "{{ lex_mcp_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart lex-mcp
+
+- name: Report whether Lexy will hand out a token link
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Lexy will include a token in the takeover link, so a person clears a
+         challenge by clicking. That token is a non-expiring credential written
+         into the conversation — see the note atop
+         ansible/roles/browser/templates/browser-token.conf.j2.'
+         if lex_mcp_takeover_token | length > 0
+         else 'BROWSER_TAKEOVER_USER/PASSWORD are unset, so Lexy hands out the
+               plain takeover URL and whoever opens it signs in themselves.' }}
+
 - name: Deploy the lex-mcp unit
   ansible.builtin.template:
     src: lex-mcp.service.j2

@@ -25,6 +25,9 @@ Environment=PLAYWRIGHT_MCP_URL=http://{{ lex_mcp_upstream_bind }}:{{ lex_mcp_ups
 # is the public hostname — and wrong is worse than absent, because Lexy would
 # confidently send someone to a page that does not exist.
 Environment=BROWSER_TAKEOVER_URL={{ lex_mcp_takeover_url }}
+# BROWSER_TAKEOVER_TOKEN, if one is configured. Kept out of this file because it
+# is world-readable and the token is a credential.
+EnvironmentFile={{ lex_mcp_dir }}/.env
 ExecStart=/usr/local/bin/node {{ lex_mcp_dir }}/server.js
 Restart=always
 RestartSec=5

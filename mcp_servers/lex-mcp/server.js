@@ -46,6 +46,15 @@ const HOST = process.env.HOST || '127.0.0.1';
 const TAKEOVER_URL =
   process.env.BROWSER_TAKEOVER_URL || 'https://ownai.deepcraftstudio.com/browser/';
 
+// base64("user:password") for an account that may open the takeover page. When
+// set, the challenge notice hands the employee a markdown link whose target
+// carries this, so a person clears a challenge by clicking rather than by going
+// to find a password. Empty means the notice gives the plain URL and the person
+// signs in themselves — which is the safer default and why nothing here invents
+// a value. It is a real credential: see the note atop the browser role's
+// browser-token.conf.j2 for where such a URL ends up.
+const TAKEOVER_TOKEN = process.env.BROWSER_TAKEOVER_TOKEN || '';
+
 const DEFAULT_LIMIT = 15000;
 
 // What to tell the employee for each way lex.bg declines to serve a page. The
@@ -100,7 +109,7 @@ async function readPage({ limit = DEFAULT_LIMIT, offset = 0 } = {}) {
       reason: 'cloudflare-challenge',
       url: page.url,
       title: page.title,
-      whatToDo: challengeNotice(TAKEOVER_URL, page.url)
+      whatToDo: challengeNotice(TAKEOVER_URL, page.url, TAKEOVER_TOKEN)
     };
   }
 
@@ -460,6 +469,8 @@ app.get('/health', async (req, res) => {
       ok: true,
       upstream: UPSTREAM_URL,
       takeoverUrl: TAKEOVER_URL,
+      // Presence, never the value — this is what `just lexy-status` prints.
+      takeoverTokenConfigured: Boolean(TAKEOVER_TOKEN),
       browser: {
         url: page.url,
         title: page.title,

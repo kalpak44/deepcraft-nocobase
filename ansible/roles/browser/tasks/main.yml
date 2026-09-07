@@ -300,6 +300,31 @@
     group: www-data
     mode: "0640"
 
+# Same reasoning as the password file: created empty when missing and never
+# touched again, because CI applies this playbook on every push to main and
+# would delete every token it did not declare. `just browser-user-add` owns the
+# contents.
+- name: Create the token file if it does not exist yet
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ browser_tokens_file }}"
+    force: false
+    owner: root
+    group: www-data
+    mode: "0640"
+
+# Must come before the location snippet is validated: the snippet references
+# $browser_realm and $browser_token_cookie, and nginx -t fails on an unknown
+# variable if the maps that define them are not in place yet.
+- name: Install the token maps at http level
+  ansible.builtin.template:
+    src: browser-token.conf.j2
+    dest: "{{ browser_token_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx for browser
+
 - name: Install the browser location snippet
   ansible.builtin.template:
     src: browser.conf.j2
@@ -366,6 +391,48 @@
   ansible.builtin.uri:
     url: "http://127.0.0.1{{ browser_location }}/vnc.html"
     status_code: 401
+  changed_when: false
+
+# The token map is one `default` away from letting everyone in, and a mistake
+# there would look like a working feature from every other angle. What actually
+# has to hold is that an unknown token yields no session cookie — that cookie is
+# the thing which opens the viewer and the websocket.
+#
+# follow_redirects: none is essential. The entry point answers 302 to everyone,
+# because nginx runs `return` in the rewrite phase and auth_basic in the later
+# access phase, so the redirect fires before any authentication. With ansible's
+# default of following redirects this check would land on the viewer's 401 and
+# pass no matter how broken the token map was.
+- name: Ask the entry point for a token that does not exist
+  ansible.builtin.uri:
+    url: "http://127.0.0.1{{ browser_location }}/?token=notarealtoken"
+    status_code: 302
+    follow_redirects: none
+  register: _bogus_token
+  changed_when: false
+
+- name: Fail if an unknown token was granted a session
+  ansible.builtin.assert:
+    that: _bogus_token.set_cookie is not defined
+    fail_msg: >-
+      An unknown token was answered with a Set-Cookie, which means the token map
+      is matching things it should not — check the `default 0` entries in
+      {{ browser_token_conf }}. Anyone who guesses the URL now has the browser.
+    quiet: true
+
+# A forged cookie must not open the viewer or the stream. This is the boundary
+# that actually protects the browser, so it is asserted directly rather than
+# inferred from the map being correct.
+- name: Verify a forged session cookie is refused
+  ansible.builtin.uri:
+    url: "http://127.0.0.1{{ browser_location }}/{{ item }}"
+    headers:
+      Cookie: "{{ browser_token_cookie }}=notarealtoken"
+    status_code: 401
+    follow_redirects: none
+  loop:
+    - vnc.html
+    - websockify
   changed_when: false
 
 - name: Report what is running

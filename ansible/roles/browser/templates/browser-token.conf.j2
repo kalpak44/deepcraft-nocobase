@@ -1,0 +1,85 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# Token access to the takeover page, so the link Lexy hands someone opens the
+# browser without them stopping to find a password mid-challenge.
+#
+# `map` and `log_format` belong to the http context, which a location snippet
+# cannot reach, so they live here: Ubuntu's nginx.conf includes conf.d/*.conf
+# inside http. The location block that uses them is in
+# {{ browser_location_file }}.
+#
+# ── What a token is, and what that costs ────────────────────────────────────
+#
+# A token is base64("user:password") — the same string a browser would put in an
+# Authorization header. That makes it a *permanent* credential in a URL, and it
+# is worth being clear-eyed about where such a URL ends up: browser history, the
+# NocoBase conversation the AI wrote it into, and anywhere that message is
+# forwarded. It does not expire on its own; revoking it means
+# `just browser-user-remove NAME`.
+#
+# So the mitigations here are deliberate, not decoration:
+#   - the token is read once, at {{ browser_location }}/, and exchanged for a
+#     cookie. It is never put in the redirect target, so it does not reach
+#     vnc.html, the websocket, or any subresource Referer.
+#   - {{ browser_location }}/ is logged with a format that drops the query
+#     string, so tokens do not accumulate in access.log.
+#   - the cookie is HttpOnly and short-lived.
+# Consider giving the link its own account rather than sharing a person's, so it
+# can be rotated without locking anyone out.
+
+# Which tokens are currently valid. Written by `just browser-user-add`, one
+# quoted base64 string per line mapping to 1 — never by the playbook, because CI
+# applies it on every push and would delete every account. A map include of an
+# empty file is valid, which is what makes a box with no accounts yet work.
+map $arg_token $browser_arg_token_ok {
+    default 0;
+    include {{ browser_tokens_file }};
+}
+
+# The same table, consulted for the cookie the token is exchanged for. Two maps
+# rather than one because nginx maps take a single source, and the two sources
+# have to be distinguishable further down: only the query-string form should set
+# a cookie.
+map $cookie_{{ browser_token_cookie }} $browser_cookie_token_ok {
+    default 0;
+    include {{ browser_tokens_file }};
+}
+
+# Either route is enough. A map source may hold several variables, so this joins
+# the two answers and treats anything but "no and no" as authenticated.
+map "$browser_arg_token_ok:$browser_cookie_token_ok" $browser_token_ok {
+    "0:0"   0;
+    default 1;
+}
+
+# The load-bearing trick: auth_basic accepts a variable, and the literal value
+# `off` disables it for that request. So a valid token turns the password prompt
+# off, and everything else still meets the same auth_basic it always did — the
+# password path is not weakened, it is bypassed only for a string that already
+# proves knowledge of the password.
+map $browser_token_ok $browser_realm {
+    1       off;
+    default "{{ browser_realm }}";
+}
+
+# Set the cookie only when a token actually arrived and checked out. add_header
+# ignores an empty value, which is what keeps this out of every other response
+# without needing an `if`.
+#
+# SameSite=Lax so the cookie survives following a link from the NocoBase chat.
+{% if browser_token_cookie_secure %}
+# Secure, because the takeover link is only ever handed out over the Cloudflare
+# hostname. This does mean the cookie is not set for plain-http LAN access to
+# 192.168.1.5 — that path still works, it just uses the password prompt.
+{% endif %}
+map $browser_arg_token_ok $browser_token_cookie {
+    1       "{{ browser_token_cookie }}=$arg_token; Path={{ browser_location }}/; HttpOnly; SameSite=Lax; Max-Age={{ browser_token_ttl }}{% if browser_token_cookie_secure %}; Secure{% endif %}";
+    default "";
+}
+
+# access.log without the query string, so a token that arrives at
+# {{ browser_location }}/ is not written to disk. $uri rather than $request is
+# the whole difference; $request carries "GET /browser/?token=... HTTP/1.1".
+log_format browser_noquery '$remote_addr - $remote_user [$time_local] '
+                           '"$request_method $uri $server_protocol" $status '
+                           '$body_bytes_sent "$http_referer" "$http_user_agent"';

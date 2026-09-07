@@ -157,6 +157,25 @@ of it. All measured on this box.
   own redirects are written, because the snippet is included in server context.
 - The viewer requesting `/browser/package.json` and getting a 404 is noVNC
   probing for its own metadata. Harmless, and not worth a location block.
+- **`auth_basic` accepts a variable, and the literal value `off` disables it.**
+  That is how token links work: a map turns a known `?token=` or session cookie
+  into `off`, and everything else still meets the password prompt. The password
+  path is bypassed only for a string that already encodes the password.
+- **`return` runs in nginx's rewrite phase, before the access phase where
+  `auth_basic` lives.** So `location = /browser/ { auth_basic ...; return 302 }`
+  answers 302 to *everyone* — the redirect fires before authentication. It is
+  safe here only because that location emits a redirect and no content, and the
+  `Set-Cookie` it carries is driven by a map that matches nothing unless the
+  token is real. Do not read an `auth_basic` next to a `return` as protection.
+- **`ansible.builtin.uri` follows redirects by default**, so a check for 401
+  against an endpoint that 302s to a 401 passes no matter how broken the
+  endpoint is. Any assertion about an entry point that redirects needs
+  `follow_redirects: none`, or it tests the wrong hop. This exact mistake made a
+  token-map check look green.
+- nginx re-reads `htpasswd` per request but reads a `map` at **load time**, so a
+  new or revoked token does nothing until nginx reloads. `just browser-user-add`
+  and `-remove` validate with `nginx -t` and reload; the playbook does not own
+  the token file at all.
 - **Playwright MCP answers 403 to every request unless `--allowed-hosts` carries
   the port.** Given `--host 127.0.0.1` it normalises the bound address to
   `localhost` and then rejects `Host: 127.0.0.1:8813`, which is exactly what

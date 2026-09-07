@@ -155,7 +155,26 @@ export function allowedUrl(raw) {
  * from here, so the only useful thing a tool can do is stop and say exactly
  * where a person should go and what they will find when they get there.
  */
-export function challengeNotice(takeoverUrl, currentUrl) {
+export function challengeNotice(takeoverUrl, currentUrl, takeoverToken) {
+  // With a token, hand the employee a ready-made markdown link: the label is
+  // the clean URL so the chat stays readable, and the href carries the token so
+  // nobody has to find a password with a challenge waiting on the other side.
+  // The token is exchanged for a cookie on that first request and appears in no
+  // later URL — see the note atop the browser role's browser-token.conf.j2.
+  const link = takeoverToken
+    ? `[${takeoverUrl}](${takeoverUrl}?token=${encodeURIComponent(takeoverToken)})`
+    : takeoverUrl;
+
+  // Only the sign-in step differs, so build the list rather than hardcoding two
+  // versions of it and letting the numbering drift.
+  const steps = [
+    `Open this link: ${link}`,
+    ...(takeoverToken ? [] : ['Sign in with the browser account they were given']),
+    'They will see the real browser window, already on the challenge',
+    'Click the "Verify you are human" checkbox and wait for the page to load',
+    'Tell you when it is done'
+  ].map((step, i) => `  ${i + 1}. ${step}`);
+
   return [
     'BLOCKED: Cloudflare is showing a human-verification challenge' +
       (currentUrl ? ` on ${currentUrl}` : '') + '.',
@@ -163,11 +182,17 @@ export function challengeNotice(takeoverUrl, currentUrl) {
     'You cannot solve this yourself. Stop researching and tell the user, in their',
     'own language, to do exactly this:',
     '',
-    `  1. Open ${takeoverUrl}`,
-    '  2. Sign in with the browser account they were given',
-    '  3. They will see the real browser window, already on the challenge',
-    '  4. Click the "Verify you are human" checkbox and wait for the page to load',
-    '  5. Tell you when it is done',
+    ...steps,
+    ...(takeoverToken
+      ? [
+          '',
+          'Reproduce that link EXACTLY as given, as markdown, so the visible text',
+          'stays the plain address and the token rides in the link target. Do not',
+          'write the token out as visible text, do not put it in a code block, and',
+          'do not mention it — it is a credential, and the user does not need to',
+          'read it to click it.'
+        ]
+      : []),
     '',
     'Then call get_browser_status to confirm the challenge is gone, and continue',
     'from where you stopped. The clearance is kept in the browser profile, so it',

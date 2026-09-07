@@ -41,11 +41,42 @@ location = {{ browser_location }} {
 # have one.
 location = {{ browser_location }}/ {
     absolute_redirect off;
+
+    # Do not read the auth_basic below as protecting this location: it does not.
+    # nginx runs `return` in the rewrite phase and auth_basic in the later access
+    # phase, so the redirect fires first and this endpoint answers 302 to
+    # everyone, token or no token. Measured, not assumed.
+    #
+    # That is acceptable because of what it does and does not do: it emits a
+    # redirect to a fixed path and no content, and the Set-Cookie below is driven
+    # by a map that only matches a token already in {{ browser_tokens_file }} —
+    # so a wrong or absent token gets no session. The real boundary is the
+    # auth_basic on the location that follows, which the viewer, its assets and
+    # the websocket all pass through. The role asserts both halves of that.
+    #
+    # auth_basic is still declared here so that a request which somehow reaches
+    # the access phase is challenged rather than served.
+    auth_basic $browser_realm;
+    auth_basic_user_file {{ browser_htpasswd }};
+
+    # Exchange the token for a cookie here and only here, so the redirect target
+    # below carries no credential and neither do the viewer's subresources.
+    # Empty for every request that did not present a token, and add_header
+    # ignores an empty value.
+    add_header Set-Cookie $browser_token_cookie;
+
+    # Logged without the query string, so tokens do not land in access.log.
+    access_log /var/log/nginx/access.log browser_noquery;
+
     return 302 {{ browser_location }}/vnc.html?autoconnect=1&resize=remote&reconnect=1&path={{ browser_location | regex_replace('^/', '') }}/websockify;
 }
 
 location {{ browser_location }}/ {
-    auth_basic "{{ browser_realm }}";
+    # The cookie set at the entry point above satisfies this, which is what
+    # carries the session through the viewer, its assets and the websocket
+    # without a token ever appearing in those URLs. Without a cookie or a token
+    # it is an ordinary password prompt.
+    auth_basic $browser_realm;
     auth_basic_user_file {{ browser_htpasswd }};
 
     # The trailing slash on proxy_pass is what strips {{ browser_location }} from
