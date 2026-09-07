@@ -79,6 +79,27 @@ the ordinary REST API with the root token — there is no `nb` env for this host
   deploy. `skillSettings.tools[].autoCall` does not override this: MCP tools
   register with `scope: GENERAL`, and `autoCall` is only consulted for
   `scope: CUSTOM`.
+- **`aiMcpClients:listTools` ignores `filterByTk`.** It returns `data` as an
+  object keyed by server name, each value an array of tools, so pick your own
+  server out of the mapping. Each tool carries the `permission` NocoBase gave
+  it — measured on this box: `get_*` tools come back `ALLOW`, everything else
+  `ASK`. That is the cheapest way to confirm the naming rule above is doing
+  what you think.
+- **`modelSettings` holds a list**, not one model:
+  `{"enabled": true, "models": [{"llmService": "<row name>", "model": "<id>"}]}`.
+  The `llmServices` row name is a generated id like `v_8u1ls8vtrsz` and differs
+  per installation — look it up, never hardcode it. `ai:listModels?llmService=<name>`
+  lists the models a service actually exposes; there is no `aiModels:list`.
+- `aiConversations:create` wants `aiEmployee` as an **object** —
+  `{"aiEmployee": {"username": "dora"}}`. A bare string fails with
+  `WHERE parameter "username" has invalid "undefined" value`.
+- `aiConversations:sendMessages` takes `{sessionId, aiEmployee: "<username>",
+  messages: [...], stream}` — note `aiEmployee` is a plain string here and an
+  object in `create`. **A message's `content` must be an object**,
+  `{"role": "user", "content": {"type": "text", "content": "..."}}`; passing a
+  plain string stores it character-indexed as `{"0": "W", "1": "h", ...}` and
+  the employee never sees the question. `stream: false` is supported and avoids
+  parsing SSE.
 - `aiConversations:sendMessages` **needs an `X-Timezone` header**. Without one,
   resolving the date variables in the system prompt dies with a bare
   `m.startOf is not a function` before the model is ever called — for every

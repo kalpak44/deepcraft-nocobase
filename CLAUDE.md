@@ -18,6 +18,7 @@ Everything is driven through `just`; CI runs the same recipes.
 | Docker | not installed and not wanted — everything runs natively under systemd |
 | Process | `nocobase.service`, running `yarn start` as the `nocobase` user |
 | WebDAV | `/data/webdav` served by the same nginx at `/webdav/`, basic auth from `/etc/nginx/webdav.htpasswd`. Accounts are runtime state — `just webdav-user-*`, never the playbook. Uploads cap at 100 MB (Cloudflare), not at nginx |
+| Documents | `docs-mcp` on `127.0.0.1:8812` indexes the share and serves it to the **Dora** AI employee over MCP — reads pdf/docx/xlsx/pptx and the legacy binary formats, writes docx/xlsx/text. Hybrid search: SQLite FTS5 plus a local `multilingual-e5-small` model, so no document text leaves the box. Wiring is runtime state — `just docs-employee`. No OCR, so a scanned PDF is reported unreadable, not silently indexed empty |
 | TLS | terminated by Cloudflare for SaaS; nginx sees plain HTTP on `:80` |
 
 ## Layout
@@ -25,12 +26,12 @@ Everything is driven through `just`; CI runs the same recipes.
 | path | what |
 |---|---|
 | `Justfile` | every command — setup, checks, deploy, data operations. CI calls these, not raw ansible |
-| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `ciela_mcp` → `whisper` → `nginx` → `webdav` |
+| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `ciela_mcp` → `whisper` → `nginx` → `webdav` → `docs_mcp` |
 | `ansible/backup.yml` | take a backup and fetch it to `./backups` |
 | `ansible/restore.yml` | restore a `.nbdata`, including the CRM template |
 | `ansible/upgrade.yml` | move to a new release and run its migrations |
-| `ansible/roles/*` | one role per concern (`ciela_mcp`, `nginx`, `nodejs`, `nocobase`, `webdav`, `whisper`) |
-| `mcp_servers/*` | MCP servers the AI employees call; `ciela_mcp` ships `ciela-mcp` to the box |
+| `ansible/roles/*` | one role per concern (`ciela_mcp`, `docs_mcp`, `nginx`, `nodejs`, `nocobase`, `webdav`, `whisper`) |
+| `mcp_servers/*` | MCP servers the AI employees call; the `ciela_mcp` and `docs_mcp` roles ship `ciela-mcp` and `docs-mcp` to the box |
 | `ansible/inventory.yml` | host details come from env vars, nothing committed |
 | `.github/workflows/deploy.yml` | runs `playbook.yml` on push to `main` touching `ansible/`, `Justfile`, or itself |
 | `.env.example` | copy to `.env`; `.env` and `./backups/` are gitignored |
@@ -46,6 +47,15 @@ just smoke                      # load every admin page in a browser; no SSH nee
 
 Data operations are deliberately separate from deploy — a routine deploy can
 never move or overwrite the database:
+
+The document employee's wiring lives in the database, so it is runtime state
+too — and re-running the recipe is how a changed prompt gets applied:
+
+```bash
+just docs-employee              # register docs-mcp and create/refresh Dora
+just docs-status                # what is indexed; whether the model is loaded
+just logs-docs                  # tail the docs-mcp journal
+```
 
 Share accounts are managed outside the playbook, because CI applies it on every
 push and would delete anything it declared:

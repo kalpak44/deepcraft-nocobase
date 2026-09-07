@@ -25,6 +25,13 @@ user     := env_var_or_default("NOCOBASE_SSH_USER", "root")
 webdav_htpasswd := env_var_or_default("WEBDAV_HTPASSWD", "/etc/nginx/webdav.htpasswd")
 webdav_location := env_var_or_default("WEBDAV_LOCATION", "/webdav")
 
+# The document research MCP server. Both must match
+# ansible/roles/docs_mcp/defaults/main.yml — the recipes below reach it on
+# loopback over the SSH connection, which is the only way in: it binds 127.0.0.1
+# and has no authentication of its own.
+docs_mcp_bind := env_var_or_default("DOCS_MCP_BIND", "127.0.0.1")
+docs_mcp_port := env_var_or_default("DOCS_MCP_PORT", "8812")
+
 # Show the available commands.
 help:
     @echo "setup"
@@ -39,6 +46,11 @@ help:
     @echo "  ...add --lan to either when you are on the home network:"
     @echo "  just connect-ssh --lan"
     @echo "  just deploy-ansible --lan"
+    @echo ""
+    @echo "documents — the AI employee that reads and writes the share"
+    @echo "  just docs-employee         register docs-mcp and create/refresh the employee"
+    @echo "  just docs-status           what is indexed, and the embedding model's state"
+    @echo "  just logs-docs             tail the docs-mcp journal"
     @echo ""
     @echo "webdav — who may mount the file share"
     @echo "  just webdav-users          list the accounts that can mount the share"
@@ -586,6 +598,54 @@ webdav-user-remove name mode="": write-ssh-key
     exit 0
     REMOTE
     echo "$name can no longer mount the share"
+
+# ── Document research employee ───────────────────────────────────────────────
+#
+# docs-mcp itself is deployed by ansible, but the MCP client row and the AI
+# employee that uses it live in the database. That makes them runtime state, the
+# same as the webdav accounts, so the setup playbook does not manage them — CI
+# applies it on every push and this is not something a push should rewrite.
+#
+# The recipe is idempotent and re-runnable: it is also how a changed
+# employee-prompt.md gets applied.
+
+# Register docs-mcp with NocoBase and create or refresh the document employee.
+docs-employee mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    # Both files travel in one tar so ssh's stdin is the archive — a heredoc
+    # would be competing for it. Paths stay repo-relative inside the archive,
+    # which is why they are repeated on the far side.
+    #
+    # --warning=no-unknown-keyword because macOS tar writes a com.apple.provenance
+    # xattr header that GNU tar on the box does not recognise and complains about
+    # once per file. The && before the cleanup has to end its line: a newline
+    # would terminate the command and bash would reject the operator.
+    tar cf - scripts/register-docs-employee.py mcp_servers/docs-mcp/employee-prompt.md \
+      | ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" 'set -eu;
+          d=/tmp/docs-employee-setup; rm -rf "$d"; mkdir -p "$d";
+          tar xf - -C "$d" --warning=no-unknown-keyword;
+          export DOCS_MCP_URL="http://{{docs_mcp_bind}}:{{docs_mcp_port}}/mcp";
+          python3 "$d/scripts/register-docs-employee.py" \
+            "$d/mcp_servers/docs-mcp/employee-prompt.md" &&
+          rm -rf "$d"'
+
+# What docs-mcp has indexed, and whether the embedding model is loaded.
+docs-status mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
+      'curl -sf "http://{{docs_mcp_bind}}:{{docs_mcp_port}}/health" | python3 -m json.tool || {
+         echo "docs-mcp is not answering — try: just logs-docs" >&2; exit 1; }'
+
+# Tail the docs-mcp journal.
+logs-docs mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" journalctl -u docs-mcp -f -n 100
 
 # Write the deploy key to disk. Accepts a raw PEM or the base64 form.
 write-ssh-key:

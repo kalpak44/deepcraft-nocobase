@@ -1,0 +1,213 @@
+---
+# onnxruntime ships prebuilt native binaries per architecture and there is no
+# source fallback. Failing here says so, rather than leaving a service that
+# installs cleanly and cannot load its model.
+- name: Refuse to deploy the embedding runtime on an unsupported architecture
+  ansible.builtin.assert:
+    that: ansible_architecture == 'x86_64'
+    fail_msg: >-
+      docs_mcp needs x86_64 — onnxruntime-node has no prebuilt binary for
+      {{ ansible_architecture }}.
+    quiet: true
+
+- name: Install the document extractors
+  ansible.builtin.apt:
+    name: "{{ docs_mcp_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ docs_mcp_user }}"
+    home: "{{ docs_mcp_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+    # Membership in the nginx worker's group is the whole reason this can read
+    # the share. append, so this never rewrites the account's other groups.
+    groups: "{{ docs_mcp_share_group }}"
+    append: true
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ docs_mcp_dir }}"
+    state: directory
+    owner: "{{ docs_mcp_user }}"
+    group: "{{ docs_mcp_user }}"
+    mode: "0750"
+
+- name: Create the model directories
+  ansible.builtin.file:
+    path: "{{ docs_mcp_dir }}/models/{{ docs_mcp_model_name }}/{{ item }}"
+    state: directory
+    owner: "{{ docs_mcp_user }}"
+    group: "{{ docs_mcp_user }}"
+    mode: "0750"
+  loop:
+    - ""
+    - onnx
+
+- name: Ship the server
+  ansible.builtin.copy:
+    src: "{{ docs_mcp_src }}/{{ item }}"
+    dest: "{{ docs_mcp_dir }}/{{ item }}"
+    owner: "{{ docs_mcp_user }}"
+    group: "{{ docs_mcp_user }}"
+    mode: "0640"
+  loop: "{{ docs_mcp_files }}"
+  register: _source
+  notify: Restart docs-mcp
+
+# get_url with a checksum is idempotent on content, not on presence: a file that
+# is already there and already matches is left alone and reports no change, and
+# one that does not match is replaced. That is what makes a 118M model download
+# safe to leave in a playbook CI runs on every push.
+- name: Fetch the embedding model
+  ansible.builtin.get_url:
+    url: "https://huggingface.co/{{ docs_mcp_model_repo }}/resolve/main/{{ item.path }}"
+    dest: "{{ docs_mcp_dir }}/models/{{ docs_mcp_model_name }}/{{ item.path }}"
+    checksum: "sha256:{{ item.sha256 }}"
+    owner: "{{ docs_mcp_user }}"
+    group: "{{ docs_mcp_user }}"
+    mode: "0640"
+    timeout: 120
+  loop: "{{ docs_mcp_model_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Restart docs-mcp
+
+- name: Look for an installed dependency tree
+  ansible.builtin.stat:
+    path: "{{ docs_mcp_dir }}/node_modules/.package-lock.json"
+  register: _deps
+
+# `npm ci` wipes and rebuilds node_modules every time it runs, which is both
+# slow and a restart the service does not need — so it only runs when the
+# shipped sources moved or nothing is installed yet. `ci` rather than `install`
+# because it installs exactly the committed lockfile and never rewrites it.
+#
+# --ignore-scripts on purpose. The three packages with install scripts here
+# (onnxruntime-node, sharp, protobufjs) only use them to fetch optional extras —
+# onnxruntime's GPU providers, and a libvips that sharp no longer needs now that
+# it ships platform binaries as npm packages. Verified on this box: the model
+# loads and embeds with the scripts skipped. Skipping them explicitly also means
+# a future npm that stops gating install scripts cannot start running a
+# compiler here.
+- name: Install the dependencies
+  ansible.builtin.command:
+    cmd: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+    chdir: "{{ docs_mcp_dir }}"
+  become_user: "{{ docs_mcp_user }}"
+  environment:
+    HOME: "{{ docs_mcp_dir }}"
+  when: _source.changed or not _deps.stat.exists
+  changed_when: true
+  notify: Restart docs-mcp
+
+- name: Deploy the docs-mcp unit
+  ansible.builtin.template:
+    src: docs-mcp.service.j2
+    dest: /etc/systemd/system/docs-mcp.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docs-mcp
+
+- name: Start docs-mcp and enable it at boot
+  ansible.builtin.systemd:
+    name: docs-mcp
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# So a restart triggered by any of the templates above lands before the checks
+# below, rather than after the role has already called itself a success.
+- name: Apply pending restarts now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# The most likely way for this role to be broken while looking fine: the service
+# account is not in the nginx worker's group, or the share's mode changed, and
+# every document silently becomes unreadable. Reading the directory as the
+# service account itself is the only check that catches it.
+- name: Confirm the service account can read the share
+  ansible.builtin.command:
+    cmd: "ls {{ docs_mcp_share }}"
+  become_user: "{{ docs_mcp_user }}"
+  changed_when: false
+
+- name: Read the share's ownership and mode
+  ansible.builtin.stat:
+    path: "{{ docs_mcp_share }}"
+  register: _share
+
+# write_document and edit_document are only usable if the group the service runs
+# as can write the share. Checking it here means a share whose mode or group
+# drifted fails the deploy, rather than turning into an AI employee that reads
+# documents happily and cannot save one.
+- name: Confirm the share is writable by the group docs-mcp runs as
+  ansible.builtin.assert:
+    that:
+      - _share.stat.exists
+      - _share.stat.isdir
+      - _share.stat.gr_name == docs_mcp_share_group
+      - _share.stat.wgrp
+    fail_msg: >-
+      {{ docs_mcp_share }} is {{ _share.stat.gr_name | default('missing') }}
+      mode {{ _share.stat.mode | default('?') }} — docs-mcp runs with
+      {{ docs_mcp_share_group }} as its group and needs group write to author
+      documents. The webdav role owns this directory.
+    quiet: true
+
+# The package names and the binary names do not line up — catdoc ships xls2csv
+# and catppt — so "apt says it is installed" is not the same as "extract.js can
+# run it". shell, not command, because command -v is a shell builtin.
+- name: Confirm every extractor is on PATH
+  ansible.builtin.shell:
+    cmd: >-
+      for t in pdftotext antiword catdoc xls2csv catppt; do
+        command -v "$t" >/dev/null || { echo "not on PATH: $t"; exit 1; };
+      done
+  changed_when: false
+
+# /health reports the index, not just liveness, so this distinguishes a server
+# that is answering from one that is listening. It deliberately does not load
+# the embedding model — see the next task for that.
+- name: Confirm docs-mcp answers
+  ansible.builtin.uri:
+    url: "http://{{ docs_mcp_bind }}:{{ docs_mcp_port }}/health"
+    status_code: 200
+  register: _docs_check
+  until: _docs_check.json.ok | default(false)
+  retries: 12
+  delay: 5
+  changed_when: false
+
+# Whether the model actually loads is not visible from /health, and a checksum
+# only proves the bytes arrived. This runs one real embedding as the service
+# account, so a broken runtime or a model the code cannot read fails in ansible
+# rather than the first time somebody asks the employee a question.
+- name: Confirm the embedding model loads and embeds
+  ansible.builtin.command:
+    cmd: >-
+      node -e "const {embedQuery}=await import('./embed.js');
+      const v=await embedQuery('deployment check');
+      if(v.length!==384) throw new Error('unexpected dimension '+v.length);
+      console.log('ok')" --input-type=module
+    chdir: "{{ docs_mcp_dir }}"
+  become_user: "{{ docs_mcp_user }}"
+  environment:
+    HOME: "{{ docs_mcp_dir }}"
+    DOCS_MCP_MODEL_DIR: "{{ docs_mcp_dir }}/models"
+    DOCS_MCP_MODEL: "{{ docs_mcp_model_name }}"
+  changed_when: false
+
+- name: Report where docs-mcp is listening
+  ansible.builtin.debug:
+    msg: >-
+      docs-mcp on {{ docs_mcp_bind }}:{{ docs_mcp_port }}, MCP endpoint at
+      http://{{ docs_mcp_bind }}:{{ docs_mcp_port }}/mcp, indexing
+      {{ docs_mcp_share }} —
+      {{ _docs_check.json.files | default('?') }} files,
+      {{ _docs_check.json.chunks | default('?') }} chunks,
+      {{ _docs_check.json.failed | default('?') }} unreadable

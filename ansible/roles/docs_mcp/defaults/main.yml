@@ -1,0 +1,122 @@
+---
+# The docs MCP server: a small node process that indexes the WebDAV share and
+# exposes it over MCP, so an AI employee in NocoBase can research what people
+# actually uploaded instead of being told about it — and write a document back.
+#
+# Three read tools named get_* auto-call in NocoBase; the two write tools are
+# named so that they do not, which is what makes every change to the share
+# something a person confirms. See the note at the top of server.js.
+
+# The source lives in the repository, not on the box — the role ships it. Given
+# relative to ansible/, which is where every play is run from.
+docs_mcp_src: "{{ playbook_dir }}/../mcp_servers/docs-mcp"
+
+# Listed rather than copied wholesale: the source directory picks up
+# node_modules and a local index.db during development, and neither belongs on
+# the box.
+docs_mcp_files:
+  - server.js
+  - extract.js
+  - write.js
+  - store.js
+  - embed.js
+  - package.json
+  - package-lock.json
+
+# On /data, never /. The root volume is 20G and is not where software goes —
+# see the disk note in CLAUDE.md. node_modules alone is ~730M here, because
+# onnxruntime and its platform binaries come with transformers.js.
+docs_mcp_dir: /data/docs-mcp
+docs_mcp_user: docs-mcp
+
+# The share it reads. Must match webdav_dir in the webdav role — that role owns
+# the directory, this one only reads it.
+docs_mcp_share: /data/webdav
+
+# The nginx worker's group owns everything on the share (0770 on the directory,
+# 0664 on uploads), so this is both what lets the service read what people
+# upload and what a document it writes inherits — without it, an AI-authored
+# file would land on the share owned by a group nginx is not in, and nobody
+# could then edit it over WebDAV. The unit sets it as the primary group.
+docs_mcp_share_group: www-data
+
+# Loopback, not 0.0.0.0. The only client is NocoBase on this same box and the
+# endpoint carries no authentication of its own — binding the LAN would publish
+# the contents of every document on the share to anything that can reach the
+# container. 8811 is ciela-mcp.
+docs_mcp_bind: 127.0.0.1
+docs_mcp_port: 8812
+
+# The extractors. Reimplementing PDF or the legacy OLE formats in JavaScript is
+# not this server's job, so it shells out to these:
+#   poppler-utils  pdftotext, for PDF
+#   antiword       legacy binary .doc
+#   catdoc         .doc fallback, plus xls2csv for .xls and catppt for .ppt
+# The Open XML formats (docx, xlsx, pptx) are handled in process and need none
+# of these. Nothing here provides OCR: a scanned PDF has no text layer and is
+# reported as unreadable rather than silently indexed as empty.
+docs_mcp_packages:
+  - poppler-utils
+  - antiword
+  - catdoc
+
+# The embedding model, for the semantic half of the search. Pinned by checksum
+# and shipped by this role, exactly like the whisper model — the server sets
+# allowRemoteModels=false, so a missing or altered file fails loudly instead of
+# turning into a silent download at runtime.
+#
+# multilingual-e5-small rather than a stronger English model: the documents on
+# this share are Bulgarian and Russian as well as English, and an English-only
+# encoder cannot match across them. int8 quantised, 118M, 384 dimensions.
+#
+# Swap the repo and every checksum together. The sha256 of an LFS file is its
+# `lfs.oid` from https://huggingface.co/api/models/<repo>/tree/main?recursive=1;
+# the small config files are not LFS, so theirs come from downloading them.
+docs_mcp_model_name: multilingual-e5-small
+docs_mcp_model_repo: Xenova/multilingual-e5-small
+docs_mcp_model_files:
+  - path: config.json
+    sha256: cb99455288675345e1a4f411438d5d0adbba5fbd3a67ea4fb03c015433b996c1
+  - path: tokenizer.json
+    sha256: 0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39
+  - path: tokenizer_config.json
+    sha256: a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b
+  - path: special_tokens_map.json
+    sha256: d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7
+  - path: onnx/model_quantized.onnx
+    sha256: f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193
+
+# Measured on this box, not guessed: node idles at ~85M, the loaded embedding
+# model adds ~470M, and a scan that is actively embedding a large PDF peaks near
+# 1G. The ceiling has to clear that peak, because exceeding it kills docs-mcp —
+# which is recoverable — instead of the kernel picking a victim on a 4G box with
+# no swap. The server drops the model after docs_mcp_embed_idle_ms, so this is a
+# ceiling for a scan and not the resident cost.
+docs_mcp_memory_max: 1200M
+
+# One core, and yielding. CPUWeight below the default 100 means embedding only
+# gets the cores when NocoBase is not asking for them; the quota stops a scan
+# occupying both of the box's two cores at once.
+docs_mcp_cpu_quota: 100%
+docs_mcp_cpu_weight: 20
+
+# Threads onnxruntime decodes with. One, for the same reason whisper_threads is
+# one: this shares two cores with the application people are waiting on.
+docs_mcp_embed_threads: 1
+
+# How long the model may sit unused before it is unloaded, in milliseconds.
+# 0 keeps it resident for the life of the process — faster first query, ~470M
+# permanently spent. Reloading costs about three seconds.
+docs_mcp_embed_idle_ms: 300000
+
+# How stale a listing or a search may be before the share is walked again, in
+# milliseconds. The walk only stats files, so a converged share is cheap; the
+# cost is re-extracting the files that changed. Someone who has just uploaded a
+# document can force a re-scan with the tool's own refresh flag.
+docs_mcp_scan_ttl_ms: 60000
+
+# Semantic matches below this cosine similarity are dropped. e5 similarities are
+# compressed — a genuine match is ~0.85+ and an unrelated one still ~0.78 — so
+# this is deliberately generous and only removes obvious noise. Every hit
+# reports its raw score, which is what the employee is told to judge on.
+docs_mcp_similarity_floor: "0.72"

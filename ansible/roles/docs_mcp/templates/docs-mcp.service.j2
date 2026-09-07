@@ -1,0 +1,68 @@
+# Managed by ansible/roles/docs_mcp — edits on the host are overwritten.
+[Unit]
+Description=Document research MCP server over the WebDAV share
+After=network-online.target
+Wants=network-online.target
+# Same reasoning as nocobase.service: Restart=always spaces attempts wider than
+# the default 10s window, so without this a broken start loops forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ docs_mcp_user }}
+# The nginx worker's group, as the *primary* group, and that is on purpose. It
+# is what lets this read the share, where every upload is owned by that group —
+# but more importantly it is what a document this service creates inherits, so
+# nginx can still serve, overwrite and delete a file the AI wrote. Left as
+# docs-mcp, anything created here would be owned by a group nginx is not in, and
+# would arrive on the share as a file nobody could edit over WebDAV.
+Group={{ docs_mcp_share_group }}
+# Group-writable, for the same reason: the default 0022 would create 0644 files
+# that nginx could read and not write.
+UMask=0002
+WorkingDirectory={{ docs_mcp_dir }}
+Environment=NODE_ENV=production
+Environment=HOST={{ docs_mcp_bind }}
+Environment=PORT={{ docs_mcp_port }}
+Environment=DOCS_MCP_SHARE={{ docs_mcp_share }}
+Environment=DOCS_MCP_DB={{ docs_mcp_dir }}/index.db
+Environment=DOCS_MCP_MODEL_DIR={{ docs_mcp_dir }}/models
+Environment=DOCS_MCP_MODEL={{ docs_mcp_model_name }}
+Environment=DOCS_MCP_EMBED_THREADS={{ docs_mcp_embed_threads }}
+Environment=DOCS_MCP_EMBED_IDLE_MS={{ docs_mcp_embed_idle_ms }}
+Environment=DOCS_MCP_SCAN_TTL_MS={{ docs_mcp_scan_ttl_ms }}
+Environment=DOCS_MCP_SIMILARITY_FLOOR={{ docs_mcp_similarity_floor }}
+ExecStart=/usr/local/bin/node {{ docs_mcp_dir }}/server.js
+Restart=always
+RestartSec=5
+
+# Measured, not guessed — see the note on docs_mcp_memory_max. Exceeding this
+# kills docs-mcp, which is recoverable, rather than letting the kernel pick a
+# victim on a 4G box with no swap.
+MemoryMax={{ docs_mcp_memory_max }}
+# Embedding is the only expensive thing here and it must yield to the
+# application people are waiting on.
+CPUQuota={{ docs_mcp_cpu_quota }}
+CPUWeight={{ docs_mcp_cpu_weight }}
+
+# ProtectSystem=strict makes the entire filesystem read-only and then names the
+# exceptions, so these two paths are the only things this service can write
+# anywhere on the box: its own index, and the share it is meant to author into.
+# It cannot touch /data/nocobase, the model it loads, or its own source.
+#
+# The share is writable because write_document and edit_document need it. That
+# is a real widening of what a bug here could damage, and it is the reason those
+# two tools are not named get_* — NocoBase asks before every call.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ docs_mcp_dir }} {{ docs_mcp_share }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=docs-mcp
+
+[Install]
+WantedBy=multi-user.target

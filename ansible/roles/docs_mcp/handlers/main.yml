@@ -1,0 +1,6 @@
+---
+- name: Restart docs-mcp
+  ansible.builtin.systemd:
+    name: docs-mcp
+    state: restarted
+    daemon_reload: true
