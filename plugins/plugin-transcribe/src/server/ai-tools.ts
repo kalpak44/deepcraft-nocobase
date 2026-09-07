@@ -67,7 +67,16 @@ export function registerAITools(app: Application): void {
       .string()
       .optional()
       .describe('Provider-specific model override, e.g. "gpt-4o-mini-transcribe" or "whisper-1".'),
-    language: z.string().optional().describe('ISO-639-1 language hint, e.g. "en".'),
+    language: z
+      .string()
+      .optional()
+      .describe(
+        "ISO-639-1 language of the speech, e.g. \"bg\", \"ru\", \"en\". LEAVE THIS UNSET unless " +
+          "the user has actually told you what language the recording is in. It is not a hint: " +
+          "it tells the decoder what the audio is, so guessing wrong produces confident nonsense " +
+          "rather than an error — a Bulgarian recording labelled \"en\" comes back as " +
+          "English-sounding gibberish. Omitted, the whisper server detects the language itself.",
+      ),
     prompt: z
       .string()
       .optional()
