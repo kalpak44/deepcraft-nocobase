@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory={{ whisper_dir }}
 ExecStart={{ whisper_dir }}/build/bin/whisper-server \
   --model {{ whisper_dir }}/models/{{ whisper_model_name }} \
+  --language {{ whisper_language }} \
   --threads {{ whisper_threads }} \
   --port {{ whisper_port }} \
   --host {{ whisper_bind }}

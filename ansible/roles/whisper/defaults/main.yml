@@ -40,3 +40,26 @@ whisper_cpu_weight: 20
 # Threads the server decodes with. One less than the box has, so a transcription
 # can never occupy every core at once.
 whisper_threads: 1
+
+# The spoken language of the audio. "auto" detects it per request.
+#
+# This is not a nicety on this deployment. whisper-server's own default is `en`,
+# and that default does not mean "English audio transcribes best" — it means the
+# decoder is *told* the audio is English whatever it actually is, so Bulgarian
+# and Russian recordings come back as English-sounding nonsense or rough
+# translations rather than as their own text. The multilingual model was chosen
+# precisely so that would not happen (see whisper_model_name above), and leaving
+# this unset threw that away.
+#
+# Auto-detection costs one extra pass over the first window of audio, which is
+# negligible next to decoding the rest of it.
+#
+# Set a specific code — "bg", "ru", "en" — only where every recording really is
+# that language: naming it skips detection and removes the chance of getting it
+# wrong on a short or noisy opening.
+whisper_language: auto
+
+# Deliberately absent: --translate. It would render every language into English
+# instead of transcribing it, which is the opposite of what a multilingual
+# transcript is for. Whisper's own default is off; this comment exists because
+# "auto" and "translate" get confused for each other.

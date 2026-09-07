@@ -88,8 +88,27 @@
   retries: 30
   delay: 5
 
+# whisper-server defaults to --language en, and being wrong about this is silent:
+# the port answers, transcription "works", and Bulgarian or Russian audio simply
+# comes back as English-sounding nonsense. So check the flag actually reached the
+# running unit rather than trusting that the template rendered.
+- name: Read the command line whisper-server is running
+  ansible.builtin.command: systemctl show whisper-server --property=ExecStart --no-pager
+  register: _whisper_exec
+  changed_when: false
+
+- name: Fail if the language flag did not reach the service
+  ansible.builtin.assert:
+    that: "'--language ' ~ whisper_language in _whisper_exec.stdout"
+    fail_msg: >-
+      whisper-server is running without --language {{ whisper_language }}, so it
+      is decoding every recording as English whatever language it is in. That
+      shows up as plausible-looking nonsense, not as an error.
+    quiet: true
+
 - name: Report where whisper is listening
   ansible.builtin.debug:
     msg: >-
       whisper-server on {{ whisper_bind }}:{{ whisper_port }} with
-      {{ whisper_model_name }}, capped at {{ whisper_memory_max }}
+      {{ whisper_model_name }}, language {{ whisper_language }}, capped at
+      {{ whisper_memory_max }}
