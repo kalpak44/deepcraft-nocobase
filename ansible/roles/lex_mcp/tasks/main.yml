@@ -51,15 +51,41 @@
   changed_when: true
   notify: Restart lex-mcp
 
-# The takeover token, if one is configured. In its own 0600 file rather than in
-# the unit, which is world-readable.
-- name: Write the takeover token file
+# The takeover token, in its own 0600 file rather than in the unit, which is
+# world-readable.
+#
+# Created empty when missing and then left alone unless a token is actually
+# configured — the same treatment browser.htpasswd and browser-tokens.map get,
+# and for a sharper version of the same reason. The token is derived from an
+# account `just browser-user-add` created, which makes it runtime state; but it
+# is also read from the environment, and CI's environment is not a developer's.
+#
+# Without the guard the two fight: CI has no BROWSER_TAKEOVER_* secrets, so it
+# renders the empty form and wipes the token, and the next local deploy writes
+# it back. Every run reports changed, restarts lex-mcp, and — the part that
+# actually matters — Lexy silently loses her one-click link after every push to
+# main. Measured, not theorised.
+- name: Create the takeover token file if it does not exist yet
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ lex_mcp_dir }}/.env"
+    force: false
+    owner: "{{ lex_mcp_user }}"
+    group: "{{ lex_mcp_user }}"
+    mode: "0600"
+
+# Note what this does *not* do: clear a token when the variables are unset.
+# Emptying BROWSER_TAKEOVER_* does not revoke anything — `just
+# browser-user-remove NAME` does, and it invalidates the token at nginx, which
+# turns any link Lexy still hands out into a 401 rather than a way in.
+- name: Write the takeover token
   ansible.builtin.template:
     src: lex-mcp.env.j2
     dest: "{{ lex_mcp_dir }}/.env"
     owner: "{{ lex_mcp_user }}"
     group: "{{ lex_mcp_user }}"
     mode: "0600"
+  when: lex_mcp_takeover_token | length > 0
   no_log: true
   notify: Restart lex-mcp
 
@@ -71,8 +97,10 @@
          into the conversation — see the note atop
          ansible/roles/browser/templates/browser-token.conf.j2.'
          if lex_mcp_takeover_token | length > 0
-         else 'BROWSER_TAKEOVER_USER/PASSWORD are unset, so Lexy hands out the
-               plain takeover URL and whoever opens it signs in themselves.' }}
+         else 'BROWSER_TAKEOVER_USER/PASSWORD are unset here, so this run left
+               the token file alone. Whatever a previous run wrote still
+               applies; nothing was revoked. To have every deploy manage it,
+               set both as repository secrets.' }}
 
 - name: Deploy the lex-mcp unit
   ansible.builtin.template:
