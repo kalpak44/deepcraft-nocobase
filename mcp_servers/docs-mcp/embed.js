@@ -17,6 +17,20 @@
 // back for the rest of the time. A keyword-only query, a listing or a plain
 // read never loads it at all.
 
+// package.json pins sharp with an `overrides` entry, and this is the only file
+// that explains why — JSON has nowhere to put a comment.
+//
+// @huggingface/transformers depends on sharp for its *image* pipelines and
+// requires ^0.34.x. Every sharp below 0.35.0 inherits four libvips CVEs
+// (GHSA-f88m-g3jw-g9cj), and no release of transformers — 4.2.0 included —
+// allows a fixed one, so Dependabot cannot resolve it and its workflow fails
+// on the repository rather than opening a PR.
+//
+// The override is safe here because of the single line below: this server asks
+// for 'feature-extraction' and nothing else. No image pipeline is ever
+// constructed, so sharp is never loaded, and forcing it outside the range
+// transformers declares costs nothing. If this file ever grows an image
+// pipeline, that reasoning stops holding and the override has to be revisited.
 import { env, pipeline } from '@huggingface/transformers';
 
 // Shipped and checksum-pinned by the docs_mcp role, never fetched at runtime:
