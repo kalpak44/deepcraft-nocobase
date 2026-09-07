@@ -545,12 +545,23 @@ webdav-user-add name mode="": write-ssh-key
     # and delete every other account. -B is bcrypt.
     printf '%s' "\$pw" | htpasswd -B -i "\$file" "\$name" >/dev/null 2>&1
     # Proves the account works through nginx, not merely that a line was written:
-    # a wrong file mode or an unsupported hash both look fine on disk. The
-    # credentials go in a 0600 temp file rather than on curl's command line.
+    # a wrong file mode or an unsupported hash both look fine on disk.
+    #
+    # The credentials go in a 0600 config file rather than on curl's command
+    # line, and as an already-encoded Authorization header rather than as a
+    # 'user =' line. curl unescapes backslash sequences inside a quoted config
+    # value, so a password containing a backslash or a double quote arrived at
+    # nginx altered and this check 401'd on an account that was in fact
+    # working. Base64's alphabet cannot contain either.
+    #
+    # Nothing in this heredoc may use a backtick or a stray backslash: it is
+    # unquoted so the local shell expands it, and both would be eaten here
+    # instead of reaching the box.
     umask 077
     rc=\$(mktemp)
     trap 'rm -f "\$rc"' EXIT
-    printf 'user = "%s:%s"\n' "\$name" "\$pw" > "\$rc"
+    printf 'header = "Authorization: Basic %s"\n' \
+      "\$(printf '%s:%s' "\$name" "\$pw" | base64 | tr -d '\n')" > "\$rc"
     code=\$(curl -K "\$rc" -s -o /dev/null -w '%{http_code}' -X PROPFIND "http://127.0.0.1\$loc/")
     [ "\$code" = 207 ] || { echo "account written but nginx answered \$code, expected 207" >&2; exit 1; }
     REMOTE
