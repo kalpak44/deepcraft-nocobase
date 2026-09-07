@@ -1,0 +1,191 @@
+---
+# A real, persistent, human-supervisable Chrome on this box.
+#
+# It exists because lex.bg sits behind Cloudflare. A headless browser gets
+# challenged and cannot answer the challenge; a person can. So the browser is a
+# long-lived service with a profile on disk, drawn on a virtual X display, and
+# that display is published as a web page a person can take over:
+#
+#   playwright-mcp  --CDP-->  this Chrome  ---->  lex.bg
+#                                 |                 |
+#                          Xvfb :99            Cloudflare
+#                                 |             challenge?
+#                          x11vnc (loopback)        |
+#                                 |          no -> continue
+#                          websockify/noVNC   yes -> a person opens
+#                                 |                  /browser/, clicks,
+#                          nginx /browser/            and the clearance
+#                            (basic auth)             lands in the profile
+#
+# The clearance cookie Cloudflare issues is HttpOnly and lives in the profile's
+# cookie database, so solving a challenge once keeps working after a restart of
+# either Chrome or the MCP server. Measured, not assumed — see the note on
+# browser_profile below.
+
+# ── the browser ──────────────────────────────────────────────────────────────
+
+# Real Google Chrome, not Playwright's bundled Chromium. Cloudflare fingerprints
+# the browser, and the bundled build advertises itself as automation-adjacent —
+# it draws a challenge far more often. Chrome also comes from an apt repo, so it
+# gets security updates like anything else on the box, which matters for the one
+# process here that renders untrusted content from the internet.
+#
+# This is the exception to the "install into /data, never /" rule: it is an apt
+# package and goes where apt puts it, ~380M in /opt/google/chrome on a root
+# volume with 17G free. Everything that *grows* — the profile and its caches —
+# is on /data below, which is the part that would actually threaten the 20G.
+browser_chrome_package: google-chrome-stable
+browser_chrome_binary: /usr/bin/google-chrome-stable
+
+# Google's apt repo. The key is verified by fingerprint rather than by the
+# checksum of the file: Google adds and rotates subkeys, which changes the
+# file's hash while the signing authority stays the same. Asserting the
+# fingerprint is present still proves the key is Google's and not a substitute.
+browser_chrome_key_url: https://dl.google.com/linux/linux_signing_key.pub
+# The armored key as downloaded, kept so the fingerprint can be re-checked and
+# so the dearmored keyring below is only rebuilt when this file actually moves.
+browser_chrome_key_armored: /usr/share/keyrings/google-chrome.pub
+browser_chrome_keyring: /usr/share/keyrings/google-chrome.gpg
+browser_chrome_key_fingerprint: EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796
+browser_chrome_repo: "deb [arch=amd64 signed-by={{ browser_chrome_keyring }}] https://dl.google.com/linux/chrome/deb/ stable main"
+browser_chrome_repo_file: google-chrome
+
+# On /data, never /. This is the growth surface: a browser profile accumulates
+# cache, service-worker storage and site data indefinitely, and it is also the
+# thing that must survive a restart — the Cloudflare clearance cookie lives in
+# {{ browser_profile }}/Default/Cookies. Deleting it is what a person does to
+# start over; nothing in this role ever does.
+browser_dir: /data/chrome
+browser_profile: "{{ browser_dir }}/profile"
+browser_user: chrome
+
+# The DevTools endpoint playwright-mcp attaches to. Loopback, and unauthenticated
+# by design — CDP has no authentication to offer. Whoever can reach this port can
+# drive the browser and read its cookies, which is exactly why it is bound to
+# loopback and why the playwright_mcp role is its only intended client.
+#
+# Chrome refuses --remote-debugging-port together with the *default* profile
+# directory, which is a second reason browser_profile is explicit above.
+browser_cdp_bind: 127.0.0.1
+browser_cdp_port: 9222
+
+# Where Chrome may go is restricted at the MCP layer, not here — the flag
+# belongs to whatever drives the browser. See playwright_mcp_allowed_origins.
+
+# The AppArmor profile Ubuntu ships for Chrome, which this role disables. It
+# looks like a no-op and is not one in this container — the long note in
+# tasks/main.yml explains what it breaks and how that was established. Set this
+# to an empty path only if you want the role to leave AppArmor alone, and expect
+# a browser with no network if you do.
+browser_apparmor_profile: /etc/apparmor.d/chrome
+
+# Chrome's own sandbox needs nested user namespaces. This container has them
+# (/proc/sys/user/max_user_namespaces is unrestricted and apparmor's userns
+# restriction is off), so the sandbox stays on and the role asserts it works
+# rather than pre-emptively disabling it. Set true only if that assert fails on
+# a rebuilt container — it trades the browser's strongest internal boundary for
+# the systemd hardening in the unit and the origin allowlist above.
+browser_no_sandbox: false
+
+# ── the virtual display ──────────────────────────────────────────────────────
+
+# :99 rather than :0 — nothing else draws here, and a number well clear of a
+# real session makes it obvious in a process list that this is the headless one.
+browser_display: ":99"
+
+# The display the person taking over will actually look at, and the window size
+# Chrome is given. Kept equal on purpose: without a window manager Chrome cannot
+# be resized by the viewer, so a mismatch shows as a letterboxed or clipped page.
+# 1280x800 is a deliberate compromise — large enough that lex.bg renders as a
+# desktop site and the Turnstile widget is reachable, small enough that the
+# framebuffer and the VNC stream stay cheap on a 4G box.
+browser_screen_width: 1280
+browser_screen_height: 800
+browser_screen_depth: 24
+
+# A window manager, so the browser window takes keyboard focus and sits at 0,0.
+# Turnstile checks that the click it receives landed on a focused window; with no
+# WM at all the click sometimes registers and sometimes does not, which is the
+# worst possible failure mode for a step a human is performing by hand.
+# matchbox is ~100K and does nothing else.
+browser_window_manager: matchbox-window-manager
+
+# Chrome renders Cyrillic; the base container has almost no fonts. Without these
+# lex.bg is boxes on the takeover screen, which makes it unusable for the one
+# job it has. Chrome's package depends on fonts-liberation, but not on a font
+# with full Cyrillic coverage.
+browser_font_packages:
+  - fonts-dejavu-core
+  - fonts-liberation
+
+# ── the remote view ─────────────────────────────────────────────────────────
+
+# Loopback, both of them. The only route in is the nginx location below, which
+# is where the authentication is — exactly the posture ciela-mcp and docs-mcp
+# already have. Binding either of these to the LAN would publish an
+# unauthenticated remote desktop of a browser holding live session cookies.
+browser_vnc_bind: 127.0.0.1
+browser_vnc_port: 5900
+browser_novnc_bind: 127.0.0.1
+browser_novnc_port: 6080
+
+# Ubuntu's novnc package. websockify serves these files itself, so nginx only
+# has to proxy — no second web server and no static root to keep in sync.
+browser_novnc_root: /usr/share/novnc
+
+# Empty means x11vnc runs with no password of its own, which is the default.
+# The authentication is the basic auth on the nginx location: :5900 is reachable
+# only from this box, and its only client is websockify on the same loopback. A
+# password here would be a second credential a person has to find while they are
+# mid-challenge, guarding a hop that is already closed — the same reasoning that
+# leaves ciela-mcp and docs-mcp unauthenticated on loopback.
+#
+# Set BROWSER_VNC_PASSWORD in .env to add one anyway, as defence in depth
+# against something else on this box reaching the display. The person taking
+# over then has to type it in the noVNC prompt after the basic auth.
+browser_vnc_password: "{{ lookup('env', 'BROWSER_VNC_PASSWORD') }}"
+browser_vnc_passwd_file: "{{ browser_dir }}/vnc.pass"
+
+# ── how a person reaches it ─────────────────────────────────────────────────
+
+# Served as a path on the existing vhost, for the same reason webdav is: the
+# Cloudflare hostname already resolves here, so a path needs no DNS record and
+# no new tunnel ingress rule in homelab-infra.
+browser_location: /browser
+
+# Dropped into the directory the nginx vhost globs — see nginx_extra_locations_dir.
+browser_location_file: /etc/nginx/locations.d/browser.conf
+
+# Runtime state, exactly like the webdav accounts and for the same reason: CI
+# applies the playbook on every push to main, so anything the playbook declared
+# here it would also delete. The role creates the file empty if it is missing
+# and never writes to it again. Accounts come from `just browser-user-add`.
+browser_htpasswd: /etc/nginx/browser.htpasswd
+browser_realm: "deepcraft browser"
+
+# The viewer holds one websocket open for as long as someone is watching, and a
+# person solving a challenge may sit on the page for minutes. nginx's default
+# 60s read timeout would drop the stream mid-session.
+browser_read_timeout: 3600s
+
+# ── resource ceilings ───────────────────────────────────────────────────────
+
+# Measured on this box, not guessed: Chrome with one lex.bg tab settles around
+# 380M and peaks near 700M while a page with the Cloudflare widget is loading.
+# The ceiling has to clear that peak, because exceeding it kills Chrome — which
+# is recoverable and obvious — rather than letting the kernel pick a victim on a
+# 4G box with no swap, where the victim would be NocoBase.
+browser_chrome_memory_max: 1200M
+
+# Xvfb holds a framebuffer, x11vnc holds one more copy of it, websockify shuffles
+# bytes. None of them should ever grow; a ceiling this low turns a leak into a
+# restart of something harmless instead of pressure on the application.
+browser_display_memory_max: 256M
+browser_vnc_memory_max: 256M
+browser_novnc_memory_max: 256M
+
+# Yielding, like docs_mcp. CPUWeight below the default 100 means rendering only
+# gets the cores when NocoBase is not asking for them, and the quota stops a
+# busy page occupying both of the box's two cores at once.
+browser_cpu_quota: 100%
+browser_cpu_weight: 20

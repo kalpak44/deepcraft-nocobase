@@ -1,0 +1,55 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# The virtual screen everything else in this stack draws on or reads from. It is
+# the root of the dependency chain: the window manager, Chrome and x11vnc are
+# all PartOf this unit, so restarting it restarts them.
+[Unit]
+Description=Virtual X display for the supervised browser
+# Same reasoning as nocobase.service: Restart=always spaces attempts wider than
+# the default 10s window, so without this a broken start loops forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ browser_user }}
+Group={{ browser_user }}
+# -nolisten tcp: nothing may reach this display over the network. The only
+# clients are on this box, over the unix socket.
+# -noreset: without it the X server resets when the last client disconnects,
+# which would tear down the display every time Chrome restarted.
+ExecStart=/usr/bin/Xvfb {{ browser_display }} \
+    -screen 0 {{ browser_screen_width }}x{{ browser_screen_height }}x{{ browser_screen_depth }} \
+    -nolisten tcp \
+    -noreset
+Restart=always
+RestartSec=2
+
+MemoryMax={{ browser_display_memory_max }}
+CPUQuota={{ browser_cpu_quota }}
+CPUWeight={{ browser_cpu_weight }}
+
+# It holds a framebuffer in memory and a socket in /tmp; it writes nothing else.
+NoNewPrivileges=true
+# The X socket lives at /tmp/.X11-unix/X{{ browser_display | replace(':', '') }},
+# so a private /tmp here means the display is invisible to anything that does not
+# share this namespace. That is the point — it hides the display from the rest of
+# the box — but it also means the window manager, Chrome and x11vnc must join
+# *this* unit's namespace rather than getting their own. They do, with
+# JoinsNamespaceOf=browser-display.service. Dropping PrivateTmp here without
+# dropping it there breaks the whole stack in a way that looks like Chrome
+# failing to find a display.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=browser-display
+
+[Install]
+WantedBy=multi-user.target

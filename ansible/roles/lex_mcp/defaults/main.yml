@@ -1,0 +1,61 @@
+---
+# lex-mcp: the tool surface the Lexy AI employee sees.
+#
+# It is a proxy in front of playwright-mcp and it exists because of a hardcoded
+# rule in NocoBase. Per .claude/rules/nocobase.md, an MCP tool auto-calls only
+# if its raw name starts with "get"; everything else is ASK, and the permission
+# map is in memory so it resets on every restart of nocobase.service. Upstream's
+# tools are all called browser_something, so wired to NocoBase directly Lexy
+# would need a human confirmation for every navigate, snapshot and click.
+#
+# This server renames a curated subset to get_*, refuses to expose the sharp
+# ones at all (browser_evaluate, browser_run_code_unsafe, browser_close), and
+# turns a Cloudflare challenge into an instruction a person can act on. See the
+# comment at the top of server.js.
+
+# The source lives in the repository, not on the box — the role ships it. Given
+# relative to ansible/, which is where every play is run from.
+lex_mcp_src: "{{ playbook_dir }}/../mcp_servers/lex-mcp"
+
+# Listed rather than copied wholesale: the source directory picks up
+# node_modules during local development, and that does not belong on the box.
+lex_mcp_files:
+  - server.js
+  - page.js
+  - upstream.js
+  - package.json
+  - package-lock.json
+
+# On /data, never /. The root volume is 20G and is not where software goes —
+# see the disk note in CLAUDE.md.
+lex_mcp_dir: /data/lex-mcp
+lex_mcp_user: lex-mcp
+
+# Loopback, not 0.0.0.0. The only client is NocoBase on this same box and the
+# endpoint carries no authentication of its own — binding the LAN would hand
+# anything that can reach the container a browser with live session cookies.
+# 8811 is ciela-mcp, 8812 docs-mcp, 8813 playwright-mcp.
+lex_mcp_bind: 127.0.0.1
+lex_mcp_port: 8814
+
+# The Playwright MCP server it proxies. Must match playwright_mcp_bind and
+# playwright_mcp_port in that role — it owns the server, this one is a client of
+# it.
+lex_mcp_upstream_bind: 127.0.0.1
+lex_mcp_upstream_port: 8813
+
+# Where a person goes to answer a Cloudflare challenge by hand. This server
+# cannot work it out for itself — it has no idea what hostname it is reached by —
+# so it is configured, and it must match nginx_server_name in the nginx role and
+# browser_location in the browser role. Getting it wrong is not a crash: Lexy
+# quotes the wrong URL at someone who then cannot find the browser.
+lex_mcp_takeover_url: "https://ownai.deepcraftstudio.com/browser/"
+
+# It holds one MCP session to playwright-mcp and slices page text. The pages
+# themselves live in Chrome's memory, not here.
+lex_mcp_memory_max: 300M
+
+# Yielding, like the rest of the MCP servers: below the default 100 means it only
+# gets the cores when NocoBase is not asking for them.
+lex_mcp_cpu_quota: 100%
+lex_mcp_cpu_weight: 20

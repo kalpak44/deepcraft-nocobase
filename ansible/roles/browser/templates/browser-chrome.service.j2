@@ -1,0 +1,88 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# Real Chrome, headed, on the virtual display, with its profile on /data. It is
+# long-lived on purpose: a person has to be able to open the takeover page and
+# find a browser already sitting there, and the Cloudflare clearance it earns
+# has to outlive any single research question.
+[Unit]
+Description=Supervised Chrome for the Playwright MCP server
+Requires=browser-display.service browser-wm.service
+After=browser-display.service browser-wm.service
+PartOf=browser-display.service
+# Shares the display unit's /tmp, which is where the X socket lives — see the
+# note in browser-display.service. This belongs in [Unit]: under [Service]
+# systemd logs "Unknown key name" and silently gives this unit its own /tmp.
+JoinsNamespaceOf=browser-display.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ browser_user }}
+Group={{ browser_user }}
+WorkingDirectory={{ browser_dir }}
+Environment=DISPLAY={{ browser_display }}
+Environment=HOME={{ browser_dir }}
+
+ExecStart={{ browser_chrome_binary }} \
+    --user-data-dir={{ browser_profile }} \
+    --remote-debugging-address={{ browser_cdp_bind }} \
+    --remote-debugging-port={{ browser_cdp_port }} \
+    --window-position=0,0 \
+    --window-size={{ browser_screen_width }},{{ browser_screen_height }} \
+{% if _browser_no_sandbox %}
+    --no-sandbox \
+{% endif %}
+    --no-first-run \
+    --no-default-browser-check \
+    --no-service-autorun \
+    --disable-dev-shm-usage \
+    --disable-gpu \
+    --password-store=basic \
+    --disable-features=Translate,MediaRouter,OptimizationHints \
+    about:blank
+
+# --password-store=basic matters more than it looks: with the default Chrome
+# hunts for gnome-keyring or kwallet, finds neither on this box, and can stall
+# during startup instead of failing.
+# --disable-dev-shm-usage because /dev/shm in an LXC container is small, and
+# Chrome's renderers fall over on it rather than degrading.
+# --disable-gpu because there is no GPU here; without it Chrome spends startup
+# probing for one.
+# No --headless anywhere on purpose. Headless Chrome is what Cloudflare
+# challenges hardest, and a headless browser has nothing for a person to take
+# over. This is the whole reason Xvfb exists in this role.
+
+Restart=always
+RestartSec=5
+
+MemoryMax={{ browser_chrome_memory_max }}
+CPUQuota={{ browser_cpu_quota }}
+CPUWeight={{ browser_cpu_weight }}
+
+# It renders untrusted pages from the internet, which makes it the least
+# trustworthy process on the box. Everything it does not need is closed off; the
+# profile is the only path it can write to.
+#
+# Note what is deliberately *absent*: RestrictNamespaces. Chrome's own sandbox
+# is built out of CLONE_NEWUSER, so restricting namespaces here would disable
+# the very boundary the role probes for. NoNewPrivileges is compatible with
+# that namespace sandbox but would break the older setuid helper — if a future
+# Chrome falls back to it, this unit is the first place to look, and the role's
+# CDP verification is what will catch it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths={{ browser_dir }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=browser-chrome
+
+[Install]
+WantedBy=multi-user.target

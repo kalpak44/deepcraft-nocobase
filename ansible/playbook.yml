@@ -12,9 +12,13 @@
   # download from ansible_architecture and the pgdg repo from the release name.
   gather_facts: true
 
-  # docs_mcp is last because it indexes the share, and it verifies itself by
-  # reading it — the directory and its group have to exist first, which is
-  # webdav's job.
+  # The last three are one feature in three concerns, and they must stay in this
+  # order: lex_mcp is a client of playwright_mcp, which attaches over CDP to the
+  # Chrome that browser runs, and each of them verifies itself by reaching the
+  # one below. browser also adds a location to the nginx vhost, so it has to
+  # follow nginx for the same reason webdav does.
+  # docs_mcp indexes the share and verifies itself by reading it — the directory
+  # and its group have to exist first, which is webdav's job.
   # webdav comes before it because it adds a location to the vhost nginx has
   # just written and verified — it needs that vhost to already exist, and nginx
   # is itself late for the reason below.
@@ -31,3 +35,6 @@
     - nginx
     - webdav
     - docs_mcp
+    - browser
+    - playwright_mcp
+    - lex_mcp

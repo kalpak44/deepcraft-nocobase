@@ -1,0 +1,104 @@
+---
+# Upstream's Playwright MCP server, pointed at the long-lived Chrome the browser
+# role runs, so the Lexy AI employee in NocoBase can read lex.bg instead of
+# answering Bulgarian law from memory.
+#
+# It attaches over CDP rather than launching a browser of its own. That is the
+# whole design: the browser has to outlive any single question so that a
+# Cloudflare clearance a person earned by hand keeps working, and it has to be
+# on a display a person can take over. A server that launched its own browser
+# per session could do neither.
+
+# The pinned package lives in the repository, not on the box — the role ships it
+# and `npm ci` installs exactly this lockfile. Given relative to ansible/, which
+# is where every play is run from.
+playwright_mcp_src: "{{ playbook_dir }}/../mcp_servers/playwright-mcp"
+
+# There is no server.js here: the server is upstream's. All that travels is the
+# dependency pin, which is what makes the installed version a decision in git
+# rather than whatever npm resolved on the day of the deploy.
+playwright_mcp_files:
+  - package.json
+  - package-lock.json
+
+# On /data, never /. The root volume is 20G and is not where software goes —
+# see the disk note in CLAUDE.md.
+playwright_mcp_dir: /data/playwright-mcp
+playwright_mcp_user: playwright-mcp
+
+# Loopback, not 0.0.0.0. The only client is NocoBase on this same box and the
+# endpoint carries no authentication of its own — binding the LAN would hand
+# anything that can reach the container a browser with live session cookies.
+# 8811 is ciela-mcp, 8812 is docs-mcp.
+playwright_mcp_bind: 127.0.0.1
+playwright_mcp_port: 8813
+
+# The DevTools endpoint of the browser role's Chrome. Must match
+# browser_cdp_bind / browser_cdp_port in that role — it owns the browser, this
+# role only attaches to it.
+playwright_mcp_cdp_bind: 127.0.0.1
+playwright_mcp_cdp_port: 9222
+
+# Measured, not guessed: without this the server answers 403 to every request.
+#
+# Playwright MCP checks the Host header against the address it bound and, having
+# been given 127.0.0.1, normalises that to "localhost" — so a request to
+# http://127.0.0.1:8813/mcp, which is exactly what NocoBase sends, fails the
+# check. The value has to carry the port. Passing '*' would disable the check.
+playwright_mcp_allowed_hosts:
+  - "{{ playwright_mcp_bind }}:{{ playwright_mcp_port }}"
+  - "localhost:{{ playwright_mcp_port }}"
+
+# Where the browser may go. Empty means no restriction at all.
+#
+# Lexy is told to use only lex.bg, but a prompt is a request and this is a
+# control: it stops a page from walking the browser somewhere else using the
+# box's own IP and cookie jar. Cloudflare's challenge widget is served from
+# challenges.cloudflare.com and has to be allowed too, or the challenge cannot
+# render and the person taking over has nothing to click.
+#
+# Two things to know before changing it. Upstream's own note applies: this is
+# not a security boundary and it does not follow redirects. And because the
+# context is shared, it applies to the tab a person is driving by hand as well
+# as to Lexy's — which is fine for solving a lex.bg challenge and surprising if
+# you expected to browse elsewhere. This is the first thing to relax if a
+# challenge will not render.
+playwright_mcp_allowed_origins:
+  - "https://lex.bg"
+  - "https://*.lex.bg"
+  - "https://challenges.cloudflare.com"
+
+# Snapshot spill files and screenshots. browser_navigate writes its snapshot
+# here and returns a link to it rather than the text, which is why Lexy's prompt
+# requires an explicit browser_snapshot to actually read a page — a link to a
+# path on the box is worth nothing to a client that cannot open it.
+#
+# Bounded, because this grows on its own: the server evicts the oldest files
+# once the directory passes the threshold.
+playwright_mcp_output_dir: "{{ playwright_mcp_dir }}/output"
+playwright_mcp_output_max_size: 104857600
+
+# Playwright creates $HOME/.cache on its first real tool call — not at startup,
+# which is why a server that had already answered tools/list still failed with
+# `ENOENT: mkdir '/data/playwright-mcp/.cache'` the moment anything used it. The
+# unit keeps the install directory read-only, so this has to exist and be
+# writable in its own right.
+playwright_mcp_cache_dir: "{{ playwright_mcp_dir }}/.cache"
+
+# lex.bg is a slow PHP site fronted by Cloudflare, and a challenge adds a round
+# trip through a widget. The upstream default of 60s is enough for a normal page
+# and not for a page that is being challenged, where the tab sits waiting for a
+# person. Generous on purpose: the cost of being wrong here is a tool call that
+# fails just as someone was about to rescue it.
+playwright_mcp_timeout_navigation: 120000
+playwright_mcp_timeout_action: 15000
+
+# Node holds one websocket to Chrome and one HTTP server; the pages themselves
+# live in Chrome's memory, not here. Anything above this is a leak, and the box
+# has 4G with no swap shared with NocoBase, whisper, docs-mcp and now a browser.
+playwright_mcp_memory_max: 400M
+
+# Yielding, like docs_mcp and the browser role: below the default 100 means it
+# only gets the cores when NocoBase is not asking for them.
+playwright_mcp_cpu_quota: 100%
+playwright_mcp_cpu_weight: 20

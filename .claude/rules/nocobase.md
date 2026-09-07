@@ -112,3 +112,52 @@ the ordinary REST API with the root token — there is no `nb` env for this host
   or `$scheme` gives NocoBase the wrong origin for generated links.
 - `proxy_buffering off` and long read timeouts: the async task manager streams
   progress, and imports and backups run for minutes.
+
+## The supervised browser
+
+Facts about the Chrome the `browser` role runs and the two MCP servers in front
+of it. All measured on this box.
+
+- **Ubuntu's `/etc/apparmor.d/chrome` takes Chrome's network away in this
+  container.** The profile is `flags=(unconfined)` and its own comment says it
+  exists only to give the binary a name, so it reads like a no-op. It is not:
+  with it loaded, Chrome's browser process gets `EACCES` from
+  `socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)`. Everything follows from that one
+  denial — `Cannot start http server for devtools` (so no CDP port, so
+  playwright-mcp exposes no tools) and every page rendering as the offline error
+  page. The same user running python creates the identical socket fine, and
+  Chrome installs no seccomp filter of its own, which is what rules out the
+  obvious suspects. `--no-sandbox` makes no difference. The `browser` role
+  disables the profile and unloads it; the sysctl the profile exists to serve
+  (`apparmor_restrict_unprivileged_userns`) is 0 here, so it buys nothing.
+- **`JoinsNamespaceOf` is a `[Unit]` directive.** Under `[Service]` systemd logs
+  `Unknown key name ... ignoring` and silently gives the unit its own
+  `PrivateTmp`. The X socket lives in `/tmp/.X11-unix`, so getting this wrong
+  should break the display — it appears to work anyway because Xlib falls back
+  to an abstract socket, which makes it a bug that hides.
+- Chrome is headed on an Xvfb display on purpose. Headless is what Cloudflare
+  challenges hardest, and a headless browser has nothing for a person to take
+  over.
+- **Playwright MCP answers 403 to every request unless `--allowed-hosts` carries
+  the port.** Given `--host 127.0.0.1` it normalises the bound address to
+  `localhost` and then rejects `Host: 127.0.0.1:8813`, which is exactly what
+  NocoBase sends. Pass `127.0.0.1:8813,localhost:8813`.
+- `browser_navigate` does **not** return the page text — it writes the snapshot
+  to the output directory and returns a link to a path on the box, which is
+  worth nothing to a remote client. Only `browser_snapshot` returns it inline.
+  `lex-mcp` therefore reads pages with a fixed script instead.
+- `browser_click` and `browser_type` take **`target`**, not `ref` — and a CSS
+  selector works there as well as a snapshot ref, which is worth preferring
+  because refs are renumbered whenever the page changes.
+- **lex.bg serves failure pages with HTTP 200.** Three seen: a PHP/MySQL error
+  (it runs PHP 5.6), a bare `Please, try later` throttle, and a near-empty body.
+  None means the law is absent, and an employee that reads one as "not found"
+  gives a wrong legal answer rather than no answer — `lex-mcp` detects all three
+  and says so.
+- **lex.bg's own search is unreliable**: it answers `Няма резултати от
+  търсенето!` for `Конституция`. The structured trees
+  (`/laws/tree/laws`, `/laws/tree/code`) are the real way in, and documents live
+  at `/laws/ldoc/<id>` — the Constitution is `/laws/ldoc/521957377`.
+- The Cloudflare clearance is an HttpOnly cookie in the profile's `Cookies`
+  database. It survives a restart of both Chrome and the MCP servers, which is
+  what makes "a person clicks the checkbox once" worth building.

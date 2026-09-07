@@ -36,6 +36,10 @@ jobs:
       NOCOBASE_ROOT_PASSWORD: ${{ secrets.NOCOBASE_ROOT_PASSWORD }}
       CIELA_USERNAME: ${{ secrets.CIELA_USERNAME }}
       CIELA_PASSWORD: ${{ secrets.CIELA_PASSWORD }}
+      # Optional — see the note in .env.example. Unset means x11vnc runs with no
+      # password of its own, which is the intended default; the takeover page's
+      # nginx basic auth is the boundary.
+      BROWSER_VNC_PASSWORD: ${{ secrets.BROWSER_VNC_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v2

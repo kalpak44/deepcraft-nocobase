@@ -1,0 +1,74 @@
+# Managed by ansible/roles/playwright_mcp — edits on the host are overwritten.
+[Unit]
+Description=Playwright MCP server
+# It is useless without the browser, and a start before Chrome is listening
+# leaves it exposing no tools — which looks exactly like a broken employee.
+Requires=browser-chrome.service
+After=browser-chrome.service network-online.target
+Wants=network-online.target
+# Same reasoning as nocobase.service: Restart=always spaces attempts wider than
+# the default 10s window, so without this a broken start loops forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ playwright_mcp_user }}
+Group={{ playwright_mcp_user }}
+WorkingDirectory={{ playwright_mcp_dir }}
+Environment=NODE_ENV=production
+Environment=HOME={{ playwright_mcp_dir }}
+
+# --cdp-endpoint is what makes this attach to the long-lived Chrome instead of
+# launching one. In this mode --browser, --user-data-dir and --isolated are all
+# ignored: the profile belongs to the browser role, which is the point.
+#
+# --shared-browser-context so every MCP session lands in the same context and
+# therefore the same cookie jar. Without it a Cloudflare clearance earned in one
+# conversation would be invisible to the next.
+#
+# --allowed-hosts carries the port and is not optional — see the note in the
+# role's defaults. Without it every request from NocoBase gets a 403.
+ExecStart=/usr/local/bin/node {{ playwright_mcp_dir }}/node_modules/@playwright/mcp/cli.js \
+    --host {{ playwright_mcp_bind }} \
+    --port {{ playwright_mcp_port }} \
+    --cdp-endpoint http://{{ playwright_mcp_cdp_bind }}:{{ playwright_mcp_cdp_port }} \
+    --shared-browser-context \
+    --allowed-hosts {{ playwright_mcp_allowed_hosts | join(',') }} \
+{% if playwright_mcp_allowed_origins | length > 0 %}
+    --allowed-origins "{{ playwright_mcp_allowed_origins | join(';') }}" \
+{% endif %}
+    --output-dir {{ playwright_mcp_output_dir }} \
+    --output-max-size {{ playwright_mcp_output_max_size }} \
+    --timeout-navigation {{ playwright_mcp_timeout_navigation }} \
+    --timeout-action {{ playwright_mcp_timeout_action }}
+
+Restart=always
+RestartSec=5
+
+MemoryMax={{ playwright_mcp_memory_max }}
+CPUQuota={{ playwright_mcp_cpu_quota }}
+CPUWeight={{ playwright_mcp_cpu_weight }}
+
+# It talks to Chrome on loopback and answers on loopback. The output directory is
+# the only thing it writes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+# node_modules stays read-only; the two directories it genuinely writes are
+# carved back out. More specific paths win over the ReadOnlyPaths above.
+ReadOnlyPaths={{ playwright_mcp_dir }}
+ReadWritePaths={{ playwright_mcp_output_dir }} {{ playwright_mcp_cache_dir }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=playwright-mcp
+
+[Install]
+WantedBy=multi-user.target

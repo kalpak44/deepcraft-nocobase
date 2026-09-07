@@ -1,0 +1,187 @@
+---
+# Installs lex-mcp. The MCP client row and the Lexy employee that uses it live in
+# the database, which makes them runtime state — they belong to
+# `just lexy-employee`, not here, because CI applies this playbook on every push
+# to main and this is not something a push should rewrite.
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ lex_mcp_user }}"
+    home: "{{ lex_mcp_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ lex_mcp_dir }}"
+    state: directory
+    owner: "{{ lex_mcp_user }}"
+    group: "{{ lex_mcp_user }}"
+    mode: "0750"
+
+- name: Ship the server
+  ansible.builtin.copy:
+    src: "{{ lex_mcp_src }}/{{ item }}"
+    dest: "{{ lex_mcp_dir }}/{{ item }}"
+    owner: "{{ lex_mcp_user }}"
+    group: "{{ lex_mcp_user }}"
+    mode: "0640"
+  loop: "{{ lex_mcp_files }}"
+  register: _source
+  notify: Restart lex-mcp
+
+- name: Look for an installed dependency tree
+  ansible.builtin.stat:
+    path: "{{ lex_mcp_dir }}/node_modules/.package-lock.json"
+  register: _deps
+
+# `npm ci` wipes and rebuilds node_modules every time it runs, which is both slow
+# and a restart the service does not need — so it only runs when the shipped
+# sources moved or nothing is installed yet. `ci` rather than `install` because
+# it installs exactly the committed lockfile and never rewrites it.
+- name: Install the dependencies
+  ansible.builtin.command:
+    cmd: npm ci --omit=dev
+    chdir: "{{ lex_mcp_dir }}"
+  become_user: "{{ lex_mcp_user }}"
+  environment:
+    HOME: "{{ lex_mcp_dir }}"
+  when: _source.changed or not _deps.stat.exists
+  changed_when: true
+  notify: Restart lex-mcp
+
+- name: Deploy the lex-mcp unit
+  ansible.builtin.template:
+    src: lex-mcp.service.j2
+    dest: /etc/systemd/system/lex-mcp.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart lex-mcp
+
+- name: Start lex-mcp and enable it at boot
+  ansible.builtin.systemd:
+    name: lex-mcp
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# So a restart triggered by any of the templates above lands before the checks
+# below, rather than after the role has already called itself a success.
+- name: Apply pending restarts now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# /health is not a liveness probe here: it asks the page what it is, which only
+# answers if lex-mcp reached playwright-mcp and playwright-mcp reached Chrome. So
+# one request proves the whole chain, and distinguishes "lex-mcp is dead" from "a
+# Cloudflare challenge is waiting for a person" — the latter is not a deploy
+# failure and must not be treated as one.
+- name: Confirm lex-mcp answers and can reach the browser
+  ansible.builtin.uri:
+    url: "http://{{ lex_mcp_bind }}:{{ lex_mcp_port }}/health"
+    status_code: 200
+  register: _lex_health
+  until: _lex_health.json.ok | default(false)
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Report that a challenge is waiting for a person
+  ansible.builtin.debug:
+    msg: >-
+      lex-mcp is healthy but the browser is currently blocked by
+      {{ _lex_health.json.browser.blockedBy | default('something') }}. This is
+      not a deploy failure. Someone has to open {{ lex_mcp_takeover_url }} and
+      clear it before Lexy can research — see 'just lexy-status'.
+  when: not (_lex_health.json.browser.usable | default(true))
+
+# The tool names are the permission model on this installation, so they are worth
+# asserting rather than assuming: a tool that stops starting with "get" silently
+# starts asking for confirmation on every call, which does not look like a bug
+# in this role from anywhere else.
+- name: Ask lex-mcp which tools it exposes
+  ansible.builtin.uri:
+    url: "http://{{ lex_mcp_bind }}:{{ lex_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json, text/event-stream
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 1
+      method: initialize
+      params:
+        protocolVersion: "2025-06-18"
+        capabilities: {}
+        clientInfo:
+          name: ansible-verify
+          version: "1"
+    status_code: 200
+    return_content: true
+  register: _lex_init
+  changed_when: false
+
+- name: List the tools
+  ansible.builtin.uri:
+    url: "http://{{ lex_mcp_bind }}:{{ lex_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json, text/event-stream
+      Mcp-Session-Id: "{{ _lex_init.mcp_session_id | default('') }}"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 2
+      method: tools/list
+    status_code: 200
+    return_content: true
+  register: _lex_tools
+  changed_when: false
+
+# Whitespace-insensitive: the transport may or may not pretty-print, and an
+# assertion that silently matches nothing is worse than no assertion at all.
+- name: Collect the tool names lex-mcp reported
+  ansible.builtin.set_fact:
+    _lex_tool_names: >-
+      {{ _lex_tools.content
+         | regex_replace('\s+', '')
+         | regex_findall('"name":"([a-z0-9_]+)"') }}
+
+- name: Fail if no tools came back at all
+  ansible.builtin.assert:
+    that: _lex_tool_names | length > 0
+    fail_msg: >-
+      Could not read a tool list out of lex-mcp's response, so the checks below
+      would pass by matching nothing. It reported:
+      {{ _lex_tools.content | default('') | truncate(400) }}
+    quiet: true
+
+- name: Fail if a tool would not auto-call, or a sharp one leaked through
+  ansible.builtin.assert:
+    that:
+      # Every tool must start with get_, or NocoBase will ask before each call.
+      - _lex_tool_names | reject('match', 'get_') | list | length == 0
+      # And the ones deliberately not re-exposed must stay that way.
+      - "'browser_evaluate' not in _lex_tools.content"
+      - "'browser_run_code_unsafe' not in _lex_tools.content"
+      - "'browser_close' not in _lex_tools.content"
+      - "'get_lex_open' in _lex_tool_names"
+      - "'get_browser_status' in _lex_tool_names"
+    fail_msg: >-
+      lex-mcp's tool surface is not what this installation needs. Every tool has
+      to start with get_ so NocoBase auto-calls it, and browser_evaluate,
+      browser_run_code_unsafe and browser_close must not be exposed at all. It
+      reported: {{ _lex_tool_names | join(', ') }}
+    quiet: true
+
+- name: Report where lex-mcp is listening
+  ansible.builtin.debug:
+    msg: >-
+      lex-mcp on {{ lex_mcp_bind }}:{{ lex_mcp_port }}, MCP endpoint at
+      http://{{ lex_mcp_bind }}:{{ lex_mcp_port }}/mcp, proxying
+      {{ lex_mcp_upstream_bind }}:{{ lex_mcp_upstream_port }}. Browser currently
+      on {{ _lex_health.json.browser.url | default('?') }}. Wire it to Lexy with
+      'just lexy-employee'.

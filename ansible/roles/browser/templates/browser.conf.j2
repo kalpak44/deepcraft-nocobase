@@ -1,0 +1,69 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# Included from the NocoBase vhost, so this is a location block and nothing else.
+# The vhost's `location /` proxies to NocoBase; nginx matches the longest prefix,
+# so this wins for {{ browser_location }}/ without the two interfering.
+#
+# This is the only authenticated hop in the takeover path. x11vnc and websockify
+# are both on loopback and neither asks for a credential, so if this block ever
+# stops demanding one, a remote desktop of a browser holding live session
+# cookies becomes readable by anyone who finds the URL. The role verifies it
+# answers 401 for exactly that reason.
+
+# Convenience only: /browser and /browser/ both land on the viewer, already
+# pointed at this box's session, so the person solving a challenge never has to
+# know a filename or fill in a host box.
+#
+# absolute_redirect off is load-bearing, not tidiness. With it on, nginx builds
+# the Location header from $scheme — and Cloudflare terminates TLS before the
+# tunnel, so nginx sees plain HTTP and would send a person reading an https://
+# page to an http:// URL. A relative Location keeps whatever scheme the browser
+# already had, and still works on the LAN over plain http. Same trap as
+# X-Forwarded-Proto in the vhost; see .claude/rules/nocobase.md.
+#
+# Set inside each location rather than once at the top of this file: this
+# snippet is included in server context, so a bare directive here would change
+# how NocoBase's own redirects are written too.
+location = {{ browser_location }} {
+    absolute_redirect off;
+    return 302 {{ browser_location }}/;
+}
+
+location = {{ browser_location }}/ {
+    absolute_redirect off;
+    return 302 {{ browser_location }}/vnc.html?autoconnect=1&resize=remote&reconnect=1;
+}
+
+location {{ browser_location }}/ {
+    auth_basic "{{ browser_realm }}";
+    auth_basic_user_file {{ browser_htpasswd }};
+
+    # The trailing slash on proxy_pass is what strips {{ browser_location }} from
+    # the URI, so {{ browser_location }}/vnc.html reaches websockify as
+    # /vnc.html. noVNC resolves its websocket path relative to the page it was
+    # served from, so it asks for {{ browser_location }}/websockify and arrives
+    # here as /websockify — which is what websockify upgrades. Removing the
+    # slash breaks the websocket while leaving the page loading, so the viewer
+    # shows a black screen and no error.
+    proxy_pass http://{{ browser_novnc_bind }}:{{ browser_novnc_port }}/;
+    proxy_http_version 1.1;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+
+    # $connection_upgrade comes from the map in the vhost this is included into.
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+
+    # A person solving a challenge sits on this page, and the websocket carries
+    # no traffic while they read. nginx's default 60s read timeout would drop
+    # the stream underneath them.
+    proxy_read_timeout {{ browser_read_timeout }};
+    proxy_send_timeout {{ browser_read_timeout }};
+
+    # Buffering a live framebuffer stream adds latency to every repaint and
+    # makes clicking a moving target.
+    proxy_buffering off;
+}

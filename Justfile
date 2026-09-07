@@ -32,6 +32,17 @@ webdav_location := env_var_or_default("WEBDAV_LOCATION", "/webdav")
 docs_mcp_bind := env_var_or_default("DOCS_MCP_BIND", "127.0.0.1")
 docs_mcp_port := env_var_or_default("DOCS_MCP_PORT", "8812")
 
+# The lex.bg research MCP server, same reasoning as docs-mcp above. Must match
+# ansible/roles/lex_mcp/defaults/main.yml.
+lex_mcp_bind := env_var_or_default("LEX_MCP_BIND", "127.0.0.1")
+lex_mcp_port := env_var_or_default("LEX_MCP_PORT", "8814")
+
+# The supervised browser's takeover page. Both must match
+# ansible/roles/browser/defaults/main.yml — the recipes below manage the
+# accounts in that password file, and the role is what points nginx at it.
+browser_htpasswd := env_var_or_default("BROWSER_HTPASSWD", "/etc/nginx/browser.htpasswd")
+browser_location := env_var_or_default("BROWSER_LOCATION", "/browser")
+
 # Show the available commands.
 help:
     @echo "setup"
@@ -51,6 +62,17 @@ help:
     @echo "  just docs-employee         register docs-mcp and create/refresh the employee"
     @echo "  just docs-status           what is indexed, and the embedding model's state"
     @echo "  just logs-docs             tail the docs-mcp journal"
+    @echo ""
+    @echo "law — the AI employee that reads lex.bg in a real browser"
+    @echo "  just lexy-employee         register lex-mcp and create/refresh Lexy"
+    @echo "  just lexy-status           what the browser has open, and what is blocking it"
+    @echo "  just logs-lexy             tail the lex-mcp and playwright-mcp journals"
+    @echo ""
+    @echo "browser — who may take over the browser to pass a Cloudflare check"
+    @echo "  just browser-users         list the accounts that can open the takeover page"
+    @echo "  just browser-user-add NAME create an account, or reset its password"
+    @echo "  just browser-user-remove NAME  revoke access"
+    @echo "  just logs-browser          tail the Chrome, display and VNC journals"
     @echo ""
     @echo "webdav — who may mount the file share"
     @echo "  just webdav-users          list the accounts that can mount the share"
@@ -646,6 +668,173 @@ logs-docs mode="": write-ssh-key
     set -euo pipefail
     [ "{{mode}}" = "--lan" ] || just connect-warp
     exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" journalctl -u docs-mcp -f -n 100
+
+# ── Law research employee ────────────────────────────────────────────────────
+#
+# lex-mcp, playwright-mcp and the browser are all deployed by ansible, but the
+# MCP client row and the Lexy employee live in the database. That makes them
+# runtime state, the same as the webdav accounts, so the setup playbook does not
+# manage them — CI applies it on every push and this is not something a push
+# should rewrite.
+#
+# The recipe is idempotent and re-runnable: it is also how a changed
+# employee-prompt.md gets applied.
+
+# Register lex-mcp with NocoBase and create or refresh Lexy.
+lexy-employee mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    # Both files travel in one tar so ssh's stdin is the archive — a heredoc
+    # would be competing for it. Paths stay repo-relative inside the archive,
+    # which is why they are repeated on the far side.
+    #
+    # --warning=no-unknown-keyword because macOS tar writes a com.apple.provenance
+    # xattr header that GNU tar on the box does not recognise and complains about
+    # once per file. The && before the cleanup has to end its line: a newline
+    # would terminate the command and bash would reject the operator.
+    tar cf - scripts/register-lexy-employee.py mcp_servers/lex-mcp/employee-prompt.md \
+      | ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" 'set -eu;
+          d=/tmp/lexy-employee-setup; rm -rf "$d"; mkdir -p "$d";
+          tar xf - -C "$d" --warning=no-unknown-keyword;
+          export LEX_MCP_URL="http://{{lex_mcp_bind}}:{{lex_mcp_port}}/mcp";
+          python3 "$d/scripts/register-lexy-employee.py" \
+            "$d/mcp_servers/lex-mcp/employee-prompt.md" &&
+          rm -rf "$d"'
+
+# One request proves the whole chain: lex-mcp only answers this by asking the
+# page what it is, which needs playwright-mcp up and Chrome attached. So it
+# distinguishes "the stack is down" from "a Cloudflare challenge is waiting for
+# a person", which look identical from NocoBase.
+
+# What the research browser has open, and whether anything is blocking it.
+lexy-status mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
+      'curl -sf "http://{{lex_mcp_bind}}:{{lex_mcp_port}}/health" | python3 -m json.tool || {
+         echo "lex-mcp is not answering — try: just logs-lexy" >&2; exit 1; }'
+
+# Tail the two MCP journals behind Lexy, interleaved.
+logs-lexy mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
+      journalctl -u lex-mcp -u playwright-mcp -f -n 100
+
+# ── Browser takeover accounts ────────────────────────────────────────────────
+#
+# Who may open the takeover page and drive the research browser by hand. Runtime
+# state for the same reason as the webdav accounts: the browser role creates the
+# password file empty and never writes to it again, because CI applies
+# playbook.yml on every push to main and would delete anything it declared.
+#
+# This page is the one authenticated hop in front of a live remote desktop of a
+# browser holding session cookies. Treat an account here as more sensitive than
+# a share account, not less.
+#
+# nginx re-reads the password file per request, so none of these need a reload.
+
+# List the accounts that can open the takeover page.
+browser-users mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s "{{browser_htpasswd}}" <<'REMOTE'
+    set -eu
+    file="$1"
+    if [ ! -f "$file" ]; then
+      echo "no password file at $file - run 'just deploy-ansible' first" >&2
+      exit 1
+    fi
+    if [ ! -s "$file" ]; then
+      echo "(no accounts yet - add one with 'just browser-user-add NAME')"
+      exit 0
+    fi
+    cut -d: -f1 "$file" | sort
+    REMOTE
+
+# Create a takeover account, or reset the password of one that already exists.
+browser-user-add name mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Bound through single quotes before anything reads it: inside double quotes
+    # this shell would expand a $(...) in the argument while validating it, so the
+    # check would reject the result only after the command had already run.
+    name='{{name}}'
+    [[ "$name" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || {
+      echo "invalid username '$name' - letters, digits and . _ @ - only" >&2
+      exit 1
+    }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+
+    # read -s so it is never echoed, twice so a typo cannot become a password
+    # nobody knows.
+    read -rsp "password for $name: " pw; echo
+    read -rsp "repeat: " pw2; echo
+    [ -n "$pw" ] || { echo "empty password refused" >&2; exit 1; }
+    [ "$pw" = "$pw2" ] || { echo "passwords do not match" >&2; exit 1; }
+
+    # base64, so whatever the password contains cannot break the script's
+    # quoting — the alphabet is alphanumeric plus + / =. It travels inside the
+    # script on stdin rather than as an argument, so it never appears in argv or
+    # in ps on the box. \$ below is escaped to defer to the remote shell; $name
+    # and $pw_b64 are meant to expand here.
+    pw_b64=$(printf '%s' "$pw" | base64 | tr -d '\n')
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s <<REMOTE
+    set -eu
+    name='$name'
+    file='{{browser_htpasswd}}'
+    loc='{{browser_location}}'
+    pw=\$(printf '%s' '$pw_b64' | base64 -d)
+    [ -f "\$file" ] || { echo "no password file at \$file - run 'just deploy-ansible' first" >&2; exit 1; }
+    # -i reads the password from stdin. Never -c, which would truncate the file
+    # and delete every other account. -B is bcrypt.
+    printf '%s' "\$pw" | htpasswd -B -i "\$file" "\$name" >/dev/null 2>&1
+    # Proves the account works through nginx, not merely that a line was written:
+    # a wrong file mode or an unsupported hash both look fine on disk. See the
+    # note in webdav-user-add for why the credentials go in a config file as a
+    # pre-encoded header rather than on curl's command line.
+    umask 077
+    rc=\$(mktemp)
+    trap 'rm -f "\$rc"' EXIT
+    printf 'header = "Authorization: Basic %s"\n' \
+      "\$(printf '%s:%s' "\$name" "\$pw" | base64 | tr -d '\n')" > "\$rc"
+    code=\$(curl -K "\$rc" -s -o /dev/null -w '%{http_code}' "http://127.0.0.1\$loc/vnc.html")
+    [ "\$code" = 200 ] || { echo "account written but nginx answered \$code, expected 200" >&2; exit 1; }
+    REMOTE
+    echo "$name can now open the takeover page (verified against nginx)"
+
+# Revoke access to the takeover page.
+browser-user-remove name mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name='{{name}}'
+    [[ "$name" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || { echo "invalid username '$name'" >&2; exit 1; }
+    echo "This removes the browser takeover account '$name'."
+    read -r -p "Type the username to continue: " answer
+    [ "$answer" = "$name" ] || { echo "aborted" >&2; exit 1; }
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" bash -s "$name" "{{browser_htpasswd}}" <<'REMOTE'
+    set -eu
+    name="$1"; file="$2"
+    cut -d: -f1 "$file" | grep -qx "$name" || { echo "no such account: $name" >&2; exit 1; }
+    htpasswd -D "$file" "$name" >/dev/null 2>&1
+    cut -d: -f1 "$file" | grep -qx "$name" && { echo "delete did not take effect" >&2; exit 1; }
+    exit 0
+    REMOTE
+    echo "$name can no longer open the takeover page"
+
+# Tail the browser stack's journals, interleaved.
+logs-browser mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
+      journalctl -u browser-chrome -u browser-display -u browser-wm \
+                 -u browser-vnc -u browser-novnc -f -n 100
 
 # Write the deploy key to disk. Accepts a raw PEM or the base64 form.
 write-ssh-key:

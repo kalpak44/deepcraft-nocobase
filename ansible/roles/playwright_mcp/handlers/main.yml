@@ -1,0 +1,6 @@
+---
+- name: Restart playwright-mcp
+  ansible.builtin.systemd:
+    name: playwright-mcp
+    state: restarted
+    daemon_reload: true

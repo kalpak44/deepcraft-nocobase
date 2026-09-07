@@ -1,0 +1,54 @@
+# Managed by ansible/roles/lex_mcp — edits on the host are overwritten.
+[Unit]
+Description=lex-mcp, the lex.bg research tools for the Lexy AI employee
+# It is a proxy: without playwright-mcp it exposes tools that all fail on the
+# first call, which looks like a broken employee rather than a missing service.
+Requires=playwright-mcp.service
+After=playwright-mcp.service network-online.target
+Wants=network-online.target
+# Same reasoning as nocobase.service: Restart=always spaces attempts wider than
+# the default 10s window, so without this a broken start loops forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ lex_mcp_user }}
+Group={{ lex_mcp_user }}
+WorkingDirectory={{ lex_mcp_dir }}
+Environment=NODE_ENV=production
+Environment=HOME={{ lex_mcp_dir }}
+Environment=HOST={{ lex_mcp_bind }}
+Environment=PORT={{ lex_mcp_port }}
+Environment=PLAYWRIGHT_MCP_URL=http://{{ lex_mcp_upstream_bind }}:{{ lex_mcp_upstream_port }}/mcp
+# The URL Lexy gives a person when Cloudflare needs a human. Not a secret — it
+# is the public hostname — and wrong is worse than absent, because Lexy would
+# confidently send someone to a page that does not exist.
+Environment=BROWSER_TAKEOVER_URL={{ lex_mcp_takeover_url }}
+ExecStart=/usr/local/bin/node {{ lex_mcp_dir }}/server.js
+Restart=always
+RestartSec=5
+
+MemoryMax={{ lex_mcp_memory_max }}
+CPUQuota={{ lex_mcp_cpu_quota }}
+CPUWeight={{ lex_mcp_cpu_weight }}
+
+# It talks to playwright-mcp on loopback and answers on loopback. It writes
+# nothing at all.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+ReadOnlyPaths={{ lex_mcp_dir }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lex-mcp
+
+[Install]
+WantedBy=multi-user.target

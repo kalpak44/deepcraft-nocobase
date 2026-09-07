@@ -11,7 +11,7 @@ nginx in front of it and Postgres on a separate box.
 
 | | |
 |---|---|
-| `ansible/playbook.yml` | setup: node, nocobase, ciela-mcp, whisper, nginx, webdav. Never touches data |
+| `ansible/playbook.yml` | setup: node, nocobase, ciela-mcp, whisper, nginx, webdav, docs-mcp, browser, playwright-mcp, lex-mcp. Never touches data |
 | `mcp_servers/` | the MCP servers the AI employees call, shipped to the box by the playbook |
 | `ansible/backup.yml` | take a backup and fetch it |
 | `ansible/restore.yml` | restore a backup, or the published CRM template |
@@ -40,6 +40,8 @@ Sign in with the `NOCOBASE_ROOT_*` credentials from `.env`.
 | Node | current LTS, installed by the `nodejs` role from the nodejs.org tarball |
 | Ciela MCP | `/data/ciela-mcp`, run by `ciela-mcp.service` on `127.0.0.1:8811`; gives the Siela AI employee its Bulgarian legislation lookup. Needs `CIELA_*` in `.env` |
 | WebDAV | `/data/webdav`, served by the same nginx at `/webdav/` with basic auth. No VPN and no open port — it arrives over the existing Cloudflare hostname. Accounts live in `/etc/nginx/webdav.htpasswd`, managed with `just webdav-user-*` |
+| Browser | real Google Chrome, headed on an Xvfb display, profile at `/data/chrome/profile`, run by `browser-chrome.service`. It stays running so a person can take it over: `x11vnc` → `websockify` → nginx `/browser/` shows the live window, behind its own basic auth in `/etc/nginx/browser.htpasswd`, managed with `just browser-user-*` |
+| Law MCP | `playwright-mcp.service` on `127.0.0.1:8813` drives that Chrome over CDP; `lex-mcp.service` on `:8814` is the tool surface the Lexy AI employee sees. Lexy reads lex.bg in the browser instead of answering from memory — `just lexy-employee`, `just lexy-status` |
 
 ---
 
@@ -172,6 +174,51 @@ all good
 | `just webdav-users` | list the accounts that can mount the file share |
 | `just webdav-user-add NAME` | create a share account, or reset its password |
 | `just webdav-user-remove NAME` | revoke access; uploaded files are kept |
+| `just lexy-employee` | register lex-mcp and create/refresh the Lexy law researcher |
+| `just lexy-status` | what the research browser has open, and what is blocking it |
+| `just logs-lexy` | tail the lex-mcp and playwright-mcp journals |
+| `just browser-users` | list the accounts that can open the browser takeover page |
+| `just browser-user-add NAME` | create a takeover account, or reset its password |
+| `just browser-user-remove NAME` | revoke access to the takeover page |
+| `just logs-browser` | tail the Chrome, display and VNC journals |
+
+### Lexy, and passing a Cloudflare check for her
+
+Lexy researches Bulgarian law by reading <https://lex.bg/> in a real browser on
+the box. lex.bg sits behind Cloudflare, which occasionally wants a human to
+confirm it is dealing with a person — something no automated browser can do for
+itself. So the browser is a long-lived service drawing on a virtual screen, and
+that screen is published as a web page someone can take over:
+
+```
+Lexy (NocoBase)
+   ↓  get_lex_open, get_lex_snapshot, get_browser_status …
+lex-mcp  :8814          renames the tools so NocoBase auto-calls them
+   ↓
+playwright-mcp  :8813   upstream's server, attached over CDP
+   ↓
+Chrome on :99           headed, persistent profile on /data
+   ↓
+lex.bg  →  Cloudflare challenge?
+             ├── no  → Lexy carries on
+             └── yes → Lexy stops and hands the user a URL
+```
+
+When she is blocked, Lexy will ask someone to open
+<https://ownai.deepcraftstudio.com/browser/>, sign in with a `browser-user-add`
+account, click the "Verify you are human" checkbox in the live window, and say
+when it is done. The clearance is kept in the browser profile and survives a
+restart of Chrome and of both MCP servers, so this is rare rather than routine.
+
+```bash
+just browser-user-add anna      # prompts for a password, twice; never echoed
+just lexy-status                # is anything blocking the browser right now?
+just lexy-employee              # also how a changed prompt gets applied
+```
+
+`lexy-status` is worth knowing: it asks the page what it is, so one command
+tells "the stack is down" apart from "a challenge is waiting for a person" —
+which look identical from inside NocoBase.
 
 ### Managing share accounts
 

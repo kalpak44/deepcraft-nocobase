@@ -1,0 +1,50 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# Turns the RFB stream into something a browser can open: websockify bridges
+# websocket to RFB, and serves Ubuntu's noVNC client itself with --web, so there
+# is no second web server and no static root for this role to keep in sync.
+#
+# No PartOf=browser-display.service here — unlike the others this one never
+# touches X. It talks to x11vnc over loopback TCP and survives a display
+# restart, which means a viewer reconnects on its own instead of getting an
+# error page.
+[Unit]
+Description=noVNC bridge for the supervised browser
+Requires=browser-vnc.service
+After=browser-vnc.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ browser_user }}
+Group={{ browser_user }}
+Environment=HOME={{ browser_dir }}
+ExecStart=/usr/bin/websockify \
+    --web={{ browser_novnc_root }} \
+    {{ browser_novnc_bind }}:{{ browser_novnc_port }} \
+    {{ browser_vnc_bind }}:{{ browser_vnc_port }}
+Restart=always
+RestartSec=2
+
+MemoryMax={{ browser_novnc_memory_max }}
+CPUQuota={{ browser_cpu_quota }}
+CPUWeight={{ browser_cpu_weight }}
+
+# It reads static files out of {{ browser_novnc_root }} and shuffles bytes
+# between two sockets. It writes nothing at all.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=browser-novnc
+
+[Install]
+WantedBy=multi-user.target

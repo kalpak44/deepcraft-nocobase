@@ -1,0 +1,6 @@
+---
+- name: Restart lex-mcp
+  ansible.builtin.systemd:
+    name: lex-mcp
+    state: restarted
+    daemon_reload: true

@@ -1,0 +1,28 @@
+---
+# One handler for the whole stack rather than one per unit. The units are bound
+# together with PartOf, so restarting the display already takes the rest down
+# with it — driving them individually would mean reasoning about which
+# propagations have already happened. Restarting in dependency order is cheap
+# and has one predictable outcome.
+#
+# This drops whatever a person was looking at on the takeover page, and Chrome
+# loses its open tabs. Nothing important goes with it: the cookies, including
+# the Cloudflare clearance, are in the profile on disk.
+- name: Restart the browser
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop:
+    - browser-display
+    - browser-wm
+    - browser-chrome
+    - browser-vnc
+    - browser-novnc
+
+# Reload, not restart: nginx re-reads the whole configuration on reload, and a
+# restart would drop NocoBase's in-flight requests on the same vhost.
+- name: Reload nginx for browser
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded

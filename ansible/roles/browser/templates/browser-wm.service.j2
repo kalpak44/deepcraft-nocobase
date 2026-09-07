@@ -1,0 +1,49 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# A window manager exists here for one reason: Cloudflare's Turnstile widget
+# only accepts a click that landed on a focused window. With no window manager
+# at all the browser window is never formally focused and a hand-performed click
+# registers sometimes and not others — the worst failure mode for the one step
+# this whole stack exists to make possible.
+[Unit]
+Description=Window manager for the supervised browser
+Requires=browser-display.service
+After=browser-display.service
+# So a restart of the display takes this with it, rather than leaving a window
+# manager attached to a display that no longer exists.
+PartOf=browser-display.service
+# Shares the display unit's /tmp, which is where the X socket lives — see the
+# note in browser-display.service. This belongs in [Unit]: under [Service]
+# systemd logs "Unknown key name" and silently gives this unit its own /tmp.
+JoinsNamespaceOf=browser-display.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ browser_user }}
+Group={{ browser_user }}
+Environment=DISPLAY={{ browser_display }}
+Environment=HOME={{ browser_dir }}
+ExecStart=/usr/bin/matchbox-window-manager -use_titlebar no
+Restart=always
+RestartSec=2
+
+MemoryMax={{ browser_display_memory_max }}
+CPUQuota={{ browser_cpu_quota }}
+CPUWeight={{ browser_cpu_weight }}
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ browser_dir }}
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=browser-wm
+
+[Install]
+WantedBy=multi-user.target

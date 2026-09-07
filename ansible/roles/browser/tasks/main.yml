@@ -1,0 +1,379 @@
+---
+# Installs the supervised browser and wires its takeover page into the nginx
+# vhost the nginx role owns. Accounts for that page are runtime state and belong
+# to `just browser-user-*`; nothing here writes to the password file beyond
+# creating it empty, because CI applies this playbook on every push to main.
+
+- name: Install the display, the viewer and the fonts
+  ansible.builtin.apt:
+    name: "{{ browser_font_packages + [
+      'xvfb',
+      'x11vnc',
+      'novnc',
+      'websockify',
+      browser_window_manager,
+      'apache2-utils',
+      'gnupg',
+    ] }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ── Google Chrome from Google's own repo ─────────────────────────────────────
+
+- name: Fetch Google's package signing key
+  ansible.builtin.get_url:
+    url: "{{ browser_chrome_key_url }}"
+    dest: "{{ browser_chrome_key_armored }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: _chrome_key
+
+# Never install a key without knowing whose it is. Google adds and rotates
+# subkeys, so the file's checksum is not stable enough to pin — the primary
+# signing authority's fingerprint is, and its presence is what distinguishes
+# Google's key from a substituted one.
+- name: Read the fingerprints of the downloaded key
+  ansible.builtin.command: gpg --show-keys --with-colons "{{ browser_chrome_key_armored }}"
+  register: _chrome_key_fprs
+  changed_when: false
+
+- name: Refuse the key unless it is Google's signing authority
+  ansible.builtin.assert:
+    that: browser_chrome_key_fingerprint in _chrome_key_fprs.stdout
+    fail_msg: >-
+      {{ browser_chrome_key_url }} is not signed by the fingerprint this role
+      expects ({{ browser_chrome_key_fingerprint }}). Refusing to trust it for
+      apt. Either Google rotated its signing authority — verify the new
+      fingerprint independently and update browser_chrome_key_fingerprint — or
+      the download was tampered with.
+    quiet: true
+
+- name: Look for the installed keyring
+  ansible.builtin.stat:
+    path: "{{ browser_chrome_keyring }}"
+  register: _chrome_keyring
+
+# Only when the source key moved or the keyring is missing: gpg --dearmor is not
+# reproducible byte-for-byte, so running it every time would rewrite the keyring
+# and report changed on a converged box.
+- name: Install the keyring for apt
+  ansible.builtin.shell:
+    cmd: >-
+      gpg --dearmor
+      --output "{{ browser_chrome_keyring }}.new"
+      "{{ browser_chrome_key_armored }}"
+      && chmod 0644 "{{ browser_chrome_keyring }}.new"
+      && mv "{{ browser_chrome_keyring }}.new" "{{ browser_chrome_keyring }}"
+  when: _chrome_key.changed or not _chrome_keyring.stat.exists
+  changed_when: true
+
+# Written *before* the package is installed, and this is not cosmetic: Chrome's
+# postinst re-adds its own apt source unless this file tells it not to. Without
+# it the postinst rewrites the source list we manage below, and every subsequent
+# deploy reports changed — the exact bug the idempotence rule exists to catch.
+- name: Stop Chrome's postinst from managing its own apt source
+  ansible.builtin.copy:
+    content: |
+      # Managed by ansible/roles/browser — edits on the host are overwritten.
+      # The apt source is managed by ansible, with an explicit signed-by. Left
+      # to itself Chrome's postinst rewrites it on every upgrade.
+      repo_add_once="false"
+      repo_reenable_on_distupgrade="false"
+    dest: /etc/default/google-chrome
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Google Chrome apt repository
+  ansible.builtin.apt_repository:
+    repo: "{{ browser_chrome_repo }}"
+    filename: "{{ browser_chrome_repo_file }}"
+    state: present
+    update_cache: true
+
+- name: Install Google Chrome
+  ansible.builtin.apt:
+    name: "{{ browser_chrome_package }}"
+    state: present
+  notify: Restart the browser
+
+# ── the AppArmor profile that silently takes Chrome's network away ───────────
+#
+# Ubuntu's apparmor package ships /etc/apparmor.d/chrome. Its own comment says
+# it "allows everything and only exists to give the application a name instead
+# of having the label unconfined", and it is declared flags=(unconfined) — so it
+# reads like a no-op. In this container it is not one.
+#
+# Measured here: with that profile loaded, Chrome's browser process gets EACCES
+# from socket(AF_INET, SOCK_STREAM, IPPROTO_TCP). Every symptom follows from
+# that one denial — no DevTools port ("Cannot start http server for devtools"),
+# and no network at all, so every page renders as the offline error page. The
+# same user running python can create the identical socket, and Chrome installs
+# no seccomp filter of its own, which is what rules out the obvious suspects.
+#
+# The profile exists upstream to let browsers use unprivileged user namespaces
+# while kernel.apparmor_restrict_unprivileged_userns is on. That restriction is
+# off in this container (measured: the sysctl reads 0), so the profile buys
+# nothing here and costs the browser its network.
+- name: Look for the AppArmor profile Ubuntu ships for Chrome
+  ansible.builtin.stat:
+    path: "{{ browser_apparmor_profile }}"
+  register: _aa_profile
+
+- name: Create the AppArmor disable directory
+  ansible.builtin.file:
+    path: "{{ browser_apparmor_profile | dirname }}/disable"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: _aa_profile.stat.exists
+
+# The symlink is what keeps it disabled across a reboot; the unload below is
+# what makes it take effect now. Both are needed, and they are separate state.
+- name: Keep the profile from loading at boot
+  ansible.builtin.file:
+    src: "{{ browser_apparmor_profile }}"
+    dest: "{{ browser_apparmor_profile | dirname }}/disable/{{ browser_apparmor_profile | basename }}"
+    state: link
+  when: _aa_profile.stat.exists
+
+# Detected rather than forced: apparmor_parser -R on an already-unloaded profile
+# would still report changed every run, restart the browser, and drop whatever a
+# person was doing on the takeover page.
+- name: Read the profiles the kernel currently has loaded
+  ansible.builtin.command: cat /sys/kernel/security/apparmor/profiles
+  register: _aa_loaded
+  changed_when: false
+  failed_when: false
+  when: _aa_profile.stat.exists
+
+- name: Unload the profile from the running kernel
+  ansible.builtin.command: "apparmor_parser -R {{ browser_apparmor_profile }}"
+  when:
+    - _aa_profile.stat.exists
+    - _aa_loaded.stdout is defined
+    - _aa_loaded.stdout_lines | select('match', browser_apparmor_profile | basename ~ ' ') | list | length > 0
+  changed_when: true
+  notify: Restart the browser
+
+# ── the account and the profile ──────────────────────────────────────────────
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ browser_user }}"
+    home: "{{ browser_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the browser directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ browser_user }}"
+    group: "{{ browser_user }}"
+    mode: "0750"
+  loop:
+    - "{{ browser_dir }}"
+    - "{{ browser_profile }}"
+
+# Optional, and off unless BROWSER_VNC_PASSWORD is set — see the role's
+# defaults. x11vnc stores an obfuscated blob rather than the password, so this
+# cannot converge on content: it is written once and then left alone, and
+# changing the variable means removing the file to have it rewritten.
+- name: Look for an existing VNC password file
+  ansible.builtin.stat:
+    path: "{{ browser_vnc_passwd_file }}"
+  register: _vnc_pass
+  when: browser_vnc_password | length > 0
+
+- name: Store the VNC password
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/x11vnc
+      - -storepasswd
+      - "{{ browser_vnc_password }}"
+      - "{{ browser_vnc_passwd_file }}"
+  become_user: "{{ browser_user }}"
+  # Hides the password, and with it the failure — so the file is stat'd
+  # afterwards rather than trusting the return code alone.
+  no_log: true
+  when:
+    - browser_vnc_password | length > 0
+    - not _vnc_pass.stat.exists
+  changed_when: true
+  notify: Restart the browser
+
+- name: Confirm the VNC password file was written
+  ansible.builtin.stat:
+    path: "{{ browser_vnc_passwd_file }}"
+  register: _vnc_pass_after
+  failed_when: not _vnc_pass_after.stat.exists
+  when: browser_vnc_password | length > 0
+
+# ── does Chrome's own sandbox work in this container? ────────────────────────
+
+# Asked rather than assumed. The sandbox needs nested user namespaces, which
+# this unprivileged LXC does allow — but that is a property of the container's
+# configuration on the Proxmox host, not of anything in this repository, and a
+# rebuilt container could lose it. Probing takes about a second and turns a
+# Chrome that silently refuses to start into a documented fallback.
+- name: Test whether Chrome can start sandboxed
+  ansible.builtin.command:
+    cmd: >-
+      {{ browser_chrome_binary }} --headless=new --no-startup-window
+      --user-data-dir={{ browser_dir }}/.sandbox-probe
+      --dump-dom about:blank
+  become_user: "{{ browser_user }}"
+  environment:
+    HOME: "{{ browser_dir }}"
+  register: _sandbox_probe
+  changed_when: false
+  failed_when: false
+  when: not browser_no_sandbox
+
+- name: Decide whether the sandbox stays on
+  ansible.builtin.set_fact:
+    _browser_no_sandbox: "{{ browser_no_sandbox or _sandbox_probe.rc | default(1) != 0 }}"
+
+- name: Report that the sandbox had to be disabled
+  ansible.builtin.debug:
+    msg: >-
+      Chrome cannot start sandboxed in this container
+      (rc={{ _sandbox_probe.rc | default('n/a') }}); falling back to
+      --no-sandbox. The browser is still confined by the systemd hardening in
+      browser-chrome.service and by playwright_mcp_allowed_origins, but it has
+      lost its own strongest internal boundary. Fix the container's
+      user-namespace configuration on the Proxmox host to get it back.
+  when: _browser_no_sandbox and not browser_no_sandbox
+
+- name: Remove the sandbox probe's throwaway profile
+  ansible.builtin.file:
+    path: "{{ browser_dir }}/.sandbox-probe"
+    state: absent
+  changed_when: false
+
+# ── the units ────────────────────────────────────────────────────────────────
+
+- name: Deploy the browser units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - browser-display
+    - browser-wm
+    - browser-chrome
+    - browser-vnc
+    - browser-novnc
+  notify: Restart the browser
+
+- name: Start the browser stack and enable it at boot
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop:
+    - browser-display
+    - browser-wm
+    - browser-chrome
+    - browser-vnc
+    - browser-novnc
+
+# ── the takeover page ───────────────────────────────────────────────────────
+
+# force: false is what makes this safe against a box that already has accounts:
+# it creates the file when missing and never touches it otherwise. state: touch
+# would report changed on every run and rewrite the mtime.
+- name: Create the password file if it does not exist yet
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ browser_htpasswd }}"
+    force: false
+    owner: root
+    group: www-data
+    mode: "0640"
+
+- name: Install the browser location snippet
+  ansible.builtin.template:
+    src: browser.conf.j2
+    dest: "{{ browser_location_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx for browser
+
+# Separate task rather than a template `validate:`, because the snippet is not a
+# complete configuration — nginx -t can only judge it once it is in place. nginx
+# keeps serving the previously loaded config until the reload, so a failure here
+# leaves the site up.
+- name: Validate the nginx config before any reload
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Apply pending restarts and reloads now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# ── verification ────────────────────────────────────────────────────────────
+
+# A live DevTools endpoint proves more than it looks like: Chrome is not
+# headless here, so it cannot start at all without an X display. One answer from
+# this port means Xvfb is up, Chrome is drawing on it, and the profile was
+# openable — three things at once.
+- name: Confirm Chrome is up and attached to the display
+  ansible.builtin.uri:
+    url: "http://{{ browser_cdp_bind }}:{{ browser_cdp_port }}/json/version"
+    status_code: 200
+  register: _cdp
+  until: _cdp.json.Browser | default('') is search('Chrome')
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Confirm the noVNC viewer is being served
+  ansible.builtin.uri:
+    url: "http://{{ browser_novnc_bind }}:{{ browser_novnc_port }}/vnc.html"
+    status_code: 200
+  register: _novnc
+  until: _novnc.status == 200
+  retries: 12
+  delay: 5
+  changed_when: false
+
+# -T dumps the configuration nginx actually loaded, so this proves the snippet
+# is included by the vhost rather than merely present on disk.
+- name: Read back the configuration nginx is running
+  ansible.builtin.command: nginx -T
+  changed_when: false
+  register: _nginx_dump
+
+- name: Fail if the takeover page is not in the running configuration
+  ansible.builtin.assert:
+    that: "'location ' ~ browser_location ~ '/' in _nginx_dump.stdout"
+    fail_msg: "nginx reloaded but the browser location is not in its effective config"
+    quiet: true
+
+# It must answer, and must answer 401. A 200 here would mean a remote desktop of
+# a browser holding live session cookies is readable by anyone who finds the
+# URL — the one failure that would not look like a failure from anywhere else.
+- name: Verify the takeover page is published and demands credentials
+  ansible.builtin.uri:
+    url: "http://127.0.0.1{{ browser_location }}/vnc.html"
+    status_code: 401
+  changed_when: false
+
+- name: Report what is running
+  ansible.builtin.debug:
+    msg: >-
+      Chrome {{ _cdp.json.Browser | default('?') }} on {{ browser_display }},
+      profile {{ browser_profile }}, CDP on
+      {{ browser_cdp_bind }}:{{ browser_cdp_port }},
+      sandbox {{ 'off' if _browser_no_sandbox else 'on' }}. Takeover page at
+      {{ browser_location }}/ — add an account with
+      'just browser-user-add NAME'.

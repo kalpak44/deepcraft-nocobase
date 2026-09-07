@@ -19,6 +19,8 @@ Everything is driven through `just`; CI runs the same recipes.
 | Process | `nocobase.service`, running `yarn start` as the `nocobase` user |
 | WebDAV | `/data/webdav` served by the same nginx at `/webdav/`, basic auth from `/etc/nginx/webdav.htpasswd`. Accounts are runtime state — `just webdav-user-*`, never the playbook. Uploads cap at 100 MB (Cloudflare), not at nginx |
 | Documents | `docs-mcp` on `127.0.0.1:8812` indexes the share and serves it to the **Dora** AI employee over MCP — reads pdf/docx/xlsx/pptx and the legacy binary formats, writes docx/xlsx/text. Hybrid search: SQLite FTS5 plus a local `multilingual-e5-small` model, so no document text leaves the box. Wiring is runtime state — `just docs-employee`. No OCR, so a scanned PDF is reported unreadable, not silently indexed empty |
+| Browser | real Google Chrome, headed, on an Xvfb display, profile at `/data/chrome/profile`. Long-lived on purpose: lex.bg is behind Cloudflare, and a challenge can only be answered by a person. `x11vnc` → `websockify` → nginx `/browser/` publishes the live window, basic auth from `/etc/nginx/browser.htpasswd`. Accounts are runtime state — `just browser-user-*`, never the playbook |
+| Law | `playwright-mcp` on `127.0.0.1:8813` attaches to that Chrome over CDP; `lex-mcp` on `:8814` proxies it and is what the **Lexy** AI employee actually sees. The proxy exists to rename tools to `get_*` — see the permission note in [nocobase.md](.claude/rules/nocobase.md) — and to turn a Cloudflare challenge into instructions a person can act on. Wiring is runtime state — `just lexy-employee` |
 | TLS | terminated by Cloudflare for SaaS; nginx sees plain HTTP on `:80` |
 
 ## Layout
@@ -26,12 +28,12 @@ Everything is driven through `just`; CI runs the same recipes.
 | path | what |
 |---|---|
 | `Justfile` | every command — setup, checks, deploy, data operations. CI calls these, not raw ansible |
-| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `ciela_mcp` → `whisper` → `nginx` → `webdav` → `docs_mcp` |
+| `ansible/playbook.yml` | **setup only**: `nodejs` → `nocobase` → `ciela_mcp` → `whisper` → `nginx` → `webdav` → `docs_mcp` → `browser` → `playwright_mcp` → `lex_mcp` |
 | `ansible/backup.yml` | take a backup and fetch it to `./backups` |
 | `ansible/restore.yml` | restore a `.nbdata`, including the CRM template |
 | `ansible/upgrade.yml` | move to a new release and run its migrations |
-| `ansible/roles/*` | one role per concern (`ciela_mcp`, `docs_mcp`, `nginx`, `nodejs`, `nocobase`, `webdav`, `whisper`) |
-| `mcp_servers/*` | MCP servers the AI employees call; the `ciela_mcp` and `docs_mcp` roles ship `ciela-mcp` and `docs-mcp` to the box |
+| `ansible/roles/*` | one role per concern (`browser`, `ciela_mcp`, `docs_mcp`, `lex_mcp`, `nginx`, `nodejs`, `nocobase`, `playwright_mcp`, `webdav`, `whisper`) |
+| `mcp_servers/*` | MCP servers the AI employees call; the `ciela_mcp`, `docs_mcp` and `lex_mcp` roles ship `ciela-mcp`, `docs-mcp` and `lex-mcp` to the box. `playwright-mcp` is upstream's server, pinned by a lockfile and nothing else |
 | `ansible/inventory.yml` | host details come from env vars, nothing committed |
 | `.github/workflows/deploy.yml` | runs `playbook.yml` on push to `main` touching `ansible/`, `Justfile`, or itself |
 | `.env.example` | copy to `.env`; `.env` and `./backups/` are gitignored |

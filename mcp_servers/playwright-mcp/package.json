@@ -1,0 +1,8 @@
+{
+  "name": "deepcraft-playwright-mcp",
+  "private": true,
+  "description": "Pins the Playwright MCP server the playwright_mcp role installs. No code of our own — the whole point is that this stays upstream's server, at a version we chose.",
+  "dependencies": {
+    "@playwright/mcp": "0.0.80"
+  }
+}

@@ -1,0 +1,249 @@
+---
+# Installs upstream's Playwright MCP server and attaches it to the browser role's
+# Chrome. The MCP client row and the Lexy employee that uses it live in the
+# database, which makes them runtime state — they belong to `just lexy-employee`,
+# not here, because CI applies this playbook on every push to main.
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ playwright_mcp_user }}"
+    home: "{{ playwright_mcp_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ playwright_mcp_dir }}"
+    state: directory
+    owner: "{{ playwright_mcp_user }}"
+    group: "{{ playwright_mcp_user }}"
+    mode: "0750"
+
+- name: Create the writable directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ playwright_mcp_user }}"
+    group: "{{ playwright_mcp_user }}"
+    mode: "0750"
+  loop:
+    - "{{ playwright_mcp_output_dir }}"
+    - "{{ playwright_mcp_cache_dir }}"
+
+- name: Ship the dependency pin
+  ansible.builtin.copy:
+    src: "{{ playwright_mcp_src }}/{{ item }}"
+    dest: "{{ playwright_mcp_dir }}/{{ item }}"
+    owner: "{{ playwright_mcp_user }}"
+    group: "{{ playwright_mcp_user }}"
+    mode: "0640"
+  loop: "{{ playwright_mcp_files }}"
+  register: _source
+  notify: Restart playwright-mcp
+
+- name: Look for an installed dependency tree
+  ansible.builtin.stat:
+    path: "{{ playwright_mcp_dir }}/node_modules/.package-lock.json"
+  register: _deps
+
+# `npm ci` wipes and rebuilds node_modules every time it runs, which is both slow
+# and a restart the service does not need — so it only runs when the shipped
+# lockfile moved or nothing is installed yet. `ci` rather than `install` because
+# it installs exactly the committed lockfile and never rewrites it.
+#
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD is not an optimisation. The playwright package
+# downloads Chromium, Firefox and WebKit in its postinstall — roughly half a
+# gigabyte of browsers this server will never open, because it attaches to the
+# browser role's Chrome over CDP instead. Without this they land in
+# {{ playwright_mcp_dir }}/.cache on every reinstall.
+- name: Install the dependencies
+  ansible.builtin.command:
+    cmd: npm ci --omit=dev
+    chdir: "{{ playwright_mcp_dir }}"
+  become_user: "{{ playwright_mcp_user }}"
+  environment:
+    HOME: "{{ playwright_mcp_dir }}"
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+  when: _source.changed or not _deps.stat.exists
+  changed_when: true
+  notify: Restart playwright-mcp
+
+- name: Confirm the server was actually installed
+  ansible.builtin.stat:
+    path: "{{ playwright_mcp_dir }}/node_modules/@playwright/mcp/cli.js"
+  register: _cli
+
+- name: Fail if the MCP server is missing
+  ansible.builtin.assert:
+    that: _cli.stat.exists
+    fail_msg: >-
+      npm ci finished but {{ playwright_mcp_dir }}/node_modules/@playwright/mcp/cli.js
+      is not there — the package layout changed upstream and the unit's ExecStart
+      would point at nothing.
+    quiet: true
+
+- name: Deploy the playwright-mcp unit
+  ansible.builtin.template:
+    src: playwright-mcp.service.j2
+    dest: /etc/systemd/system/playwright-mcp.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart playwright-mcp
+
+- name: Start playwright-mcp and enable it at boot
+  ansible.builtin.systemd:
+    name: playwright-mcp
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# So a restart triggered by any of the templates above lands before the checks
+# below, rather than after the role has already called itself a success.
+- name: Apply pending restarts now, before verifying
+  ansible.builtin.meta: flush_handlers
+
+# A listening socket is not the thing worth checking — an MCP server that cannot
+# reach the browser listens perfectly well and fails on the first tool call. So
+# this speaks the protocol: initialize, then tools/list, and require that the
+# browser tools are actually there.
+#
+# It also exercises the Host header check, because it asks over
+# {{ playwright_mcp_bind }} exactly as NocoBase does. A 403 here means
+# playwright_mcp_allowed_hosts is wrong, which is the failure this role is most
+# likely to regress into.
+- name: Open an MCP session
+  ansible.builtin.uri:
+    url: "http://{{ playwright_mcp_bind }}:{{ playwright_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json, text/event-stream
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 1
+      method: initialize
+      params:
+        protocolVersion: "2025-06-18"
+        capabilities: {}
+        clientInfo:
+          name: ansible-verify
+          version: "1"
+    status_code: 200
+    return_content: true
+  register: _mcp_init
+  until: _mcp_init.status | default(0) == 200
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Fail if the server did not identify itself
+  ansible.builtin.assert:
+    that: "'serverInfo' in _mcp_init.content"
+    fail_msg: >-
+      playwright-mcp answered but did not complete an MCP handshake:
+      {{ _mcp_init.content | default('') | truncate(300) }}
+    quiet: true
+
+# Required by the protocol between initialize and any other request, and some
+# servers enforce it. A notification carries no id and gets 202, not 200.
+- name: Complete the MCP handshake
+  ansible.builtin.uri:
+    url: "http://{{ playwright_mcp_bind }}:{{ playwright_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json, text/event-stream
+      Mcp-Session-Id: "{{ _mcp_init.mcp_session_id }}"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: notifications/initialized
+    status_code: [200, 202]
+  changed_when: false
+
+- name: Ask which tools the server exposes
+  ansible.builtin.uri:
+    url: "http://{{ playwright_mcp_bind }}:{{ playwright_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json, text/event-stream
+      Mcp-Session-Id: "{{ _mcp_init.mcp_session_id }}"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 2
+      method: tools/list
+    status_code: 200
+    return_content: true
+  register: _mcp_tools
+  changed_when: false
+
+# browser_snapshot is the one Lexy cannot work without: it is the only tool that
+# returns page text inline, and therefore the only way she reads anything.
+- name: Fail if the browser tools are not exposed
+  ansible.builtin.assert:
+    that:
+      - "'browser_navigate' in _mcp_tools.content"
+      - "'browser_snapshot' in _mcp_tools.content"
+    fail_msg: >-
+      playwright-mcp is running but exposes no browser tools. That normally means
+      it cannot reach Chrome on
+      {{ playwright_mcp_cdp_bind }}:{{ playwright_mcp_cdp_port }} — check
+      'systemctl status browser-chrome'.
+    quiet: true
+
+# Listing tools is not enough, and this is the lesson of a failed deploy rather
+# than caution: playwright-mcp answered initialize and tools/list perfectly
+# while its very first real tool call died on `ENOENT: mkdir .cache`, because
+# Playwright creates that directory lazily. The break only surfaced one role
+# later, as lex-mcp failing. So actually call something.
+#
+# browser_snapshot, because it reads the page the browser is already on and
+# moves nothing — a deploy has no business navigating a browser someone may be
+# using.
+- name: Call a tool, to prove the browser really answers
+  ansible.builtin.uri:
+    url: "http://{{ playwright_mcp_bind }}:{{ playwright_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json, text/event-stream
+      Mcp-Session-Id: "{{ _mcp_init.mcp_session_id | default('') }}"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 3
+      method: tools/call
+      params:
+        name: browser_snapshot
+        arguments: {}
+    status_code: 200
+    return_content: true
+  register: _mcp_call
+  changed_when: false
+
+- name: Fail if the tool call did not reach the browser
+  ansible.builtin.assert:
+    that:
+      - "'Page URL' in _mcp_call.content or 'Page Title' in _mcp_call.content"
+      - "'ENOENT' not in _mcp_call.content"
+    fail_msg: >-
+      playwright-mcp accepted a browser_snapshot but did not return a page.
+      Either Chrome is not reachable on
+      {{ playwright_mcp_cdp_bind }}:{{ playwright_mcp_cdp_port }}, or the server
+      could not write to {{ playwright_mcp_cache_dir }}. It said:
+      {{ _mcp_call.content | default('') | truncate(400) }}
+    quiet: true
+
+- name: Report where playwright-mcp is listening
+  ansible.builtin.debug:
+    msg: >-
+      playwright-mcp on {{ playwright_mcp_bind }}:{{ playwright_mcp_port }},
+      MCP endpoint at http://{{ playwright_mcp_bind }}:{{ playwright_mcp_port }}/mcp,
+      attached over CDP to
+      {{ playwright_mcp_cdp_bind }}:{{ playwright_mcp_cdp_port }}. Wire it to
+      Lexy with 'just lexy-employee'.

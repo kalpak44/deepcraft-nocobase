@@ -1,0 +1,67 @@
+# Managed by ansible/roles/browser — edits on the host are overwritten.
+#
+# Exports the virtual display over RFB, on loopback only. This carries no
+# authentication of its own by default: the authentication is the basic auth on
+# the nginx location, and the only client that can reach this port is websockify
+# on the same box. See browser_vnc_password in the role's defaults for why, and
+# how to change it.
+[Unit]
+Description=RFB server for the supervised browser display
+Requires=browser-display.service
+After=browser-display.service
+PartOf=browser-display.service
+# Shares the display unit's /tmp, which is where the X socket lives — see the
+# note in browser-display.service. This belongs in [Unit]: under [Service]
+# systemd logs "Unknown key name" and silently gives this unit its own /tmp.
+JoinsNamespaceOf=browser-display.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ browser_user }}
+Group={{ browser_user }}
+Environment=HOME={{ browser_dir }}
+# -localhost is the load-bearing flag: without it this is an unauthenticated
+# remote desktop of a browser holding live session cookies, on the LAN.
+# -forever keeps it serving after a viewer disconnects, which is what makes the
+# takeover page work a second time.
+# -shared so a second viewer does not evict the first.
+# -noxdamage because the X DAMAGE extension is unreliable against Xvfb and shows
+# as a screen that stops repainting halfway through a challenge.
+ExecStart=/usr/bin/x11vnc \
+    -display {{ browser_display }} \
+    -rfbport {{ browser_vnc_port }} \
+    -localhost \
+    -forever \
+    -shared \
+    -noxdamage \
+{% if browser_vnc_password | length > 0 %}
+    -rfbauth {{ browser_vnc_passwd_file }} \
+{% else %}
+    -nopw \
+{% endif %}
+    -xkb
+Restart=always
+RestartSec=2
+
+MemoryMax={{ browser_vnc_memory_max }}
+CPUQuota={{ browser_cpu_quota }}
+CPUWeight={{ browser_cpu_weight }}
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+ReadWritePaths={{ browser_dir }}
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=browser-vnc
+
+[Install]
+WantedBy=multi-user.target
