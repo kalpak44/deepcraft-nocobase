@@ -138,6 +138,25 @@ of it. All measured on this box.
 - Chrome is headed on an Xvfb display on purpose. Headless is what Cloudflare
   challenges hardest, and a headless browser has nothing for a person to take
   over.
+- **noVNC resolves its websocket `path` against the origin root, not against the
+  page it was served from.** Served at `/browser/vnc.html` it still asks for
+  `/websockify`, which falls through this vhost to `location /`, gets proxied to
+  NocoBase, and shows in the viewer as a bare "Failed to connect to server".
+  The `/browser/` redirect therefore passes `path=browser/websockify`
+  explicitly — noVNC prepends the slash, so that value must not have one.
+  Testing `/browser/websockify` by hand proves nothing about this: it returns
+  101 either way, because it is not the path the viewer asks for.
+- Chrome *does* attach cached basic-auth credentials to a same-origin WebSocket
+  handshake, so one `auth_basic` on the location covers the viewer and its
+  stream both. Measured: `"GET /browser/websockify" 101` logged with the
+  remote user filled in.
+- nginx builds `Location` from `$scheme`, and Cloudflare terminates TLS before
+  the tunnel — so a redirect written the obvious way sends someone reading an
+  https:// page to an http:// URL. `absolute_redirect off` inside the redirect
+  locations fixes it; setting it at snippet level would change how NocoBase's
+  own redirects are written, because the snippet is included in server context.
+- The viewer requesting `/browser/package.json` and getting a 404 is noVNC
+  probing for its own metadata. Harmless, and not worth a location block.
 - **Playwright MCP answers 403 to every request unless `--allowed-hosts` carries
   the port.** Given `--host 127.0.0.1` it normalises the bound address to
   `localhost` and then rejects `Host: 127.0.0.1:8813`, which is exactly what

@@ -29,9 +29,19 @@ location = {{ browser_location }} {
     return 302 {{ browser_location }}/;
 }
 
+# The path= parameter is not optional, and it is the whole reason this redirect
+# carries a query string beyond convenience.
+#
+# noVNC resolves its websocket path against the *origin root*, not against the
+# page it was served from — with the default it asks for /websockify, which
+# falls through this vhost to `location /`, gets proxied to NocoBase, and shows
+# in the viewer as a bare "Failed to connect to server". Naming the path here is
+# what keeps the websocket inside {{ browser_location }}/ where the proxy and
+# the auth actually are. noVNC prepends the slash itself, so this value must not
+# have one.
 location = {{ browser_location }}/ {
     absolute_redirect off;
-    return 302 {{ browser_location }}/vnc.html?autoconnect=1&resize=remote&reconnect=1;
+    return 302 {{ browser_location }}/vnc.html?autoconnect=1&resize=remote&reconnect=1&path={{ browser_location | regex_replace('^/', '') }}/websockify;
 }
 
 location {{ browser_location }}/ {
