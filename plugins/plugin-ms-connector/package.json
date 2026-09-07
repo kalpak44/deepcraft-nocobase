@@ -1,0 +1,72 @@
+{
+  "name": "@deepcraft/plugin-ms-connector",
+  "version": "0.1.0",
+  "description": "NocoBase plugin that connects NocoBase AI employees to external services. Currently includes connectors for Outlook Mail and Microsoft Calendar (Microsoft Graph) — more connectors coming.",
+  "displayName": "Microsoft Connector",
+  "keywords": [
+    "nocobase",
+    "nocobase-plugin",
+    "microsoft",
+    "outlook",
+    "microsoft-graph",
+    "microsoft-calendar",
+    "oauth",
+    "ai-tools"
+  ],
+  "license": "MIT",
+  "main": "dist/server/index.js",
+  "module": "dist/server/index.js",
+  "types": "dist/server/index.d.ts",
+  "nocobase": {
+    "defaultEnabled": false,
+    "supportedVersions": [
+      "2.2.6"
+    ],
+    "editionLevel": 0
+  },
+  "files": [
+    "dist",
+    "assets",
+    "client.js",
+    "client.d.ts",
+    "client-v2.js",
+    "client-v2.d.ts",
+    "server.js",
+    "server.d.ts",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "bash ../build.sh plugin-ms-connector",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@nocobase/client": "2.2.6",
+    "@nocobase/client-v2": "2.2.6",
+    "@nocobase/database": "2.2.6",
+    "@nocobase/flow-engine": "2.2.6",
+    "@nocobase/server": "2.2.6",
+    "@nocobase/utils": "2.2.6",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@nocobase/client": "2.2.6",
+    "@nocobase/client-v2": "2.2.6",
+    "@nocobase/database": "2.2.6",
+    "@nocobase/flow-engine": "2.2.6",
+    "@nocobase/server": "2.2.6",
+    "@nocobase/utils": "2.2.6",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.7",
+    "antd": "5.24.2",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-i18next": "^11.15.1",
+    "typescript": "^5.9.3",
+    "zod": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
