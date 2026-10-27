@@ -143,6 +143,18 @@ transcription-workflow` owns it, the same way `just docs-employee` owns Dora.
   1s clip and an 11s clip both took ~91s. So a timeout has a floor of a minute
   and a half whatever the input, and the node's stock `60000` could never have
   transcribed anything at all.
+- A tool registered by a plugin rather than an MCP server is bound under its
+  **bare** `definition.name` — `transcribeAudio`, with none of the
+  `mcp-<server>-` prefixing Dora's and Lexy's tools carry — and its
+  `defaultPermission: ALLOW` is honoured, so it auto-calls. `aiTools:list` is
+  the way to confirm a tool exists before binding an employee to it; its rows
+  carry the name under `definition.name`, not at the top level.
+- **`ai:listModels` is not authoritative about what a provider will serve.** On
+  this box it reports `deepseek-flash` and `deepseek-v4-pro`, while every
+  working employee runs `deepseek-v4-flash` — which answers fine and the
+  listing omits. The service row's `enabledModels` is stale in the other
+  direction (`deepseek-v4-flash-vision-exp`). Copy what a working employee
+  already uses rather than trusting either list.
 
 ## nginx
 

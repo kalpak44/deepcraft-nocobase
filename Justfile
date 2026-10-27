@@ -86,6 +86,7 @@ help:
     @echo ""
     @echo "transcription — the workflow that turns a meeting recording into text"
     @echo "  just transcription-workflow  point the workflow at this box's whisper"
+    @echo "  just transcription-employee  create/refresh Transcriber and bind the tool"
     @echo "  just transcription-check     transcribe a sample end to end"
     @echo "  just logs-whisper            tail the whisper-server journal"
     @echo ""
@@ -773,6 +774,19 @@ transcription-workflow mode="": write-ssh-key
           export TRANSCRIPTION_BASE_URL="{{nocobase_app_url}}";
           export TRANSCRIPTION_TIMEOUT_MS="{{transcription_timeout_ms}}";
           python3 "$d/scripts/configure-transcription-workflow.py" &&
+          rm -rf "$d"'
+
+# Create or refresh the Transcriber employee and bind it to whisper.
+transcription-employee mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    tar cf - scripts/register-transcriber-employee.py plugins/plugin-transcribe/employee-prompt.md \
+      | ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" 'set -eu;
+          d=/tmp/transcriber-employee-setup; rm -rf "$d"; mkdir -p "$d";
+          tar xf - -C "$d" --warning=no-unknown-keyword;
+          python3 "$d/scripts/register-transcriber-employee.py" \
+            "$d/plugins/plugin-transcribe/employee-prompt.md" &&
           rm -rf "$d"'
 
 # Transcribe a sample through the whole chain and report what came back.

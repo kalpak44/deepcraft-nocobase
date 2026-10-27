@@ -66,9 +66,15 @@ changes, which is how it silently stopped working once already:
 
 ```bash
 just transcription-workflow     # point the workflow at this box's whisper
+just transcription-employee     # create/refresh Transcriber and bind its tool
 just transcription-check        # transcribe a sample end to end
 just logs-whisper               # tail the whisper-server journal
 ```
+
+**Transcriber** is the AI employee side of the same thing — it calls the
+`transcribeAudio` tool rather than hearing anything itself, so the audio never
+leaves the box. Re-running the recipe is how a changed
+[employee-prompt.md](plugins/plugin-transcribe/employee-prompt.md) is applied.
 
 Share accounts are managed outside the playbook, because CI applies it on every
 push and would delete anything it declared:
