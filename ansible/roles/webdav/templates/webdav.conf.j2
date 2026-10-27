@@ -38,6 +38,22 @@ location {{ webdav_location }}/ {
     dav_ext_methods PROPFIND OPTIONS LOCK UNLOCK;
     dav_ext_lock zone=webdav;
 
+    # dav-ext answers OPTIONS with "DAV: 2" and never claims class 1, and no
+    # client will mount a share that does not. davfs2 says so outright —
+    # "mounting failed; the server does not support WebDAV" — while Windows
+    # Explorer only manages "Windows cannot access", which is the same refusal
+    # with the reason removed.
+    #
+    # The claim is honest: the share implements class 1 (PROPFIND returns 207)
+    # and class 2 on top of it (LOCK returns 201). Only the advertisement was
+    # wrong.
+    #
+    # more_set_headers, not add_header, and that is the whole reason
+    # headers-more is installed: add_header appends rather than replaces, and a
+    # header the dav-ext module set itself wins regardless — measured, the
+    # response still read "DAV: 2" with add_header in place.
+    more_set_headers "DAV: 1,2";
+
     # Without this a PUT into a directory the client has not created yet 409s.
     create_full_put_path on;
 

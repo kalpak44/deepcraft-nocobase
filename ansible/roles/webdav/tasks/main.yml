@@ -14,9 +14,26 @@
       - libnginx-mod-http-dav-ext
       - apache2-utils
       - curl
+      # headers-more, to replace the DAV header dav-ext emits. See the note on
+      # more_set_headers in the template: nginx's own add_header cannot override
+      # a header the module set, and Windows will not mount a share that does
+      # not claim class 1.
+      - libnginx-mod-http-headers-more-filter
     state: present
     update_cache: true
     cache_valid_time: 3600
+  register: _webdav_packages
+
+# A reload re-reads the configuration but cannot load a dynamic module into the
+# already-running master process, so the first converge after headers-more is
+# installed needs a restart or nginx -t fails on "unknown directive
+# more_set_headers". Guarded by the apt result, so a converged box never
+# restarts and never drops NocoBase's in-flight requests.
+- name: Restart nginx so a newly installed module is loaded
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+  when: _webdav_packages.changed
 
 # The package drops a load_module line here. Checked explicitly so a renamed or
 # missing package fails with something readable, rather than as an "unknown
@@ -106,7 +123,31 @@
       - "'dav_ext_methods' in _nginx_dump.stdout"
       - "'location ' ~ webdav_location ~ '/' in _nginx_dump.stdout"
       - "'dav_ext_lock_zone zone=webdav' in _nginx_dump.stdout"
+      - "'more_set_headers \"DAV: 1,2\"' in _nginx_dump.stdout"
     fail_msg: "nginx reloaded but the webdav location is not in its effective config"
+
+# The class-1 claim is what every client gates mounting on, so check the header
+# on the wire rather than trusting that the directive is in the config: the
+# module must also be loaded for it to take effect, and a reload cannot load a
+# newly installed one. Unauthenticated OPTIONS is a 401, and that is fine — the
+# headers filter has already run by then, so the DAV header is present and this
+# needs no credentials.
+- name: Read the DAV header the share advertises
+  ansible.builtin.uri:
+    url: "http://127.0.0.1{{ webdav_location }}/"
+    method: OPTIONS
+    status_code: 401
+  register: _webdav_options
+  changed_when: false
+
+- name: Fail if the share does not advertise WebDAV class 1
+  ansible.builtin.assert:
+    that: "'1' in (_webdav_options.dav | default('')).split(',')"
+    fail_msg: >-
+      the share advertises "DAV: {{ _webdav_options.dav | default('(absent)') }}".
+      Without class 1 no client will mount it — davfs2 refuses with "the server
+      does not support WebDAV" and Windows with "Windows cannot access"
+    quiet: true
 
 # The share must answer, and must answer 401. A 200 here would mean the whole
 # thing is readable without credentials, which is the one failure that would not
