@@ -4,6 +4,25 @@
 # The vhost's `location /` proxies to NocoBase; nginx matches the longest prefix,
 # so this wins for {{ webdav_location }}/ without the two interfering.
 
+# Without this, {{ webdav_location }} — no trailing slash — does not match the
+# prefix below and falls through to the vhost's `location /`, which proxies it to
+# NocoBase and answers 200 with the application's index.html. A WebDAV client
+# that asks for the share and is handed a web page concludes the share is not
+# there: Windows Explorer reports "Windows cannot access" with no further detail,
+# and its Map Network Drive dialog is quite willing to drop a trailing slash the
+# user typed. Measured: {{ webdav_location }} -> 200 text/html,
+# {{ webdav_location }}/ -> 401. Normalising here is what makes the share
+# mountable by a client that does not send the slash itself.
+#
+# absolute_redirect off for the same reason as in the browser role: nginx builds
+# Location from $scheme, Cloudflare terminates TLS before the tunnel, so an
+# absolute redirect would send an https client to an http:// URL. It is scoped to
+# this location so NocoBase's own redirects keep being written as they were.
+location = {{ webdav_location }} {
+    absolute_redirect off;
+    return 301 {{ webdav_location }}/;
+}
+
 location {{ webdav_location }}/ {
     # `root`, not `alias` — see the note in the role's defaults. nginx appends
     # the URI to this, so {{ webdav_location }}/x resolves to {{ webdav_dir }}/x.

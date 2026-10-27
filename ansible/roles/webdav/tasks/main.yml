@@ -118,6 +118,39 @@
     status_code: 401
   changed_when: false
 
+# The slashless path must redirect rather than reach NocoBase: without this it
+# falls through to `location /`, is proxied to NocoBase and answers 200 with the
+# application's index.html, which a client reads as "no share here".
+#
+# Read with curl rather than ansible.builtin.uri because the raw header is the
+# point. uri resolves `location` into an absolute URL before handing it over, so
+# it reports http://127.0.0.1/webdav/ whether nginx sent that or a relative
+# /webdav/ — which is precisely the difference being checked. An absolute
+# redirect would send an https client to an http:// URL, because nginx builds
+# Location from $scheme and Cloudflare terminates TLS before the tunnel.
+- name: Read the redirect the slashless path emits
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -s
+      - -o
+      - /dev/null
+      - -D
+      - "-"
+      - "http://127.0.0.1{{ webdav_location }}"
+  register: _webdav_slash
+  changed_when: false
+
+- name: Fail if the slashless path does not redirect to the share relatively
+  ansible.builtin.assert:
+    that:
+      - "'301 Moved Permanently' in _webdav_slash.stdout"
+      - "'Location: ' ~ webdav_location ~ '/' in _webdav_slash.stdout"
+    fail_msg: >-
+      {{ webdav_location }} did not answer a relative 301 to {{ webdav_location }}/.
+      It said: {{ _webdav_slash.stdout_lines | select('search', '^(HTTP|Location)') | list }}
+    quiet: true
+
 - name: Show what is being served
   ansible.builtin.debug:
     msg: >-
