@@ -66,10 +66,17 @@ changes, which is how it silently stopped working once already:
 
 ```bash
 just transcription-workflow     # point the workflow at this box's whisper
+just transcription-token        # mint/rotate the key the workflow authenticates with
 just transcription-employee     # create/refresh Transcriber and bind its tool
 just transcription-check        # transcribe a sample end to end
 just logs-whisper               # tail the whisper-server journal
 ```
+
+The workflow authenticates to its own API with a NocoBase API key. Rotating
+`APP_KEY` silently invalidates it — the 401 says "your session has expired"
+whatever the real cause — so `just transcription-token` is the fix for a
+workflow that has started failing on auth. **whisper reads wav, mp3 and flac
+but not `.m4a`/AAC**, which it rejects with a bare `Invalid request`.
 
 **Transcriber** is the AI employee side of the same thing — it calls the
 `transcribeAudio` tool rather than hearing anything itself, so the audio never

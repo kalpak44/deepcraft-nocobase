@@ -139,6 +139,12 @@ transcription-workflow` owns it, the same way `just docs-employee` owns Dora.
   `encodeURIComponent` included, which real upload names like
   `Recording (4)-msher8.m4a` need. The script instruction implements no `test`
   hook, so `flow_nodes:test` 500s on it; there is no way to dry-run one.
+- **whisper-server cannot read `.m4a`/AAC.** It answers a bare `Invalid
+  request` (HTTP 400) with no hint that the codec is the problem. wav, mp3 and
+  flac all decode fine, and `--language auto` correctly picks up Bulgarian from
+  an mp3. The box ships no ffmpeg, so there is nothing in the chain that can
+  transcode — an m4a recording, which is what phones and Teams produce, cannot
+  currently be transcribed at all.
 - **whisper costs about 90s per 30-second window of audio, not per second.** A
   1s clip and an 11s clip both took ~91s. So a timeout has a floor of a minute
   and a half whatever the input, and the node's stock `60000` could never have
@@ -149,6 +155,26 @@ transcription-workflow` owns it, the same way `just docs-employee` owns Dora.
   `defaultPermission: ALLOW` is honoured, so it auto-calls. `aiTools:list` is
   the way to confirm a tool exists before binding an employee to it; its rows
   carry the name under `definition.name`, not at the top level.
+- **A 401 `INVALID_TOKEN` saying "Your session has expired" is just as likely to
+  mean a rotated `APP_KEY` as an expired token.** `@nocobase/auth` turns both a
+  `TokenExpiredError` and a `JsonWebTokenError: invalid signature` into the same
+  status, code and sentence. The apiKeys *row* survives an `APP_KEY` rotation
+  intact — right name, right role, months of validity left in the UI — while the
+  token it holds can no longer be verified by anything. The journal is the only
+  place the two are distinguishable: grep nocobase for `jwt.decode`.
+- **API keys are not subject to the token policy.** `@nocobase/auth` applies
+  `sessionExpirationTime` and `tokenExpirationTime` only to tokens carrying
+  `temp`; an API key has no `temp` claim, so it returns on JWT validity alone.
+  Its `expiresIn` is therefore the whole story, and it is passed straight to
+  `jwt.sign`, so any `ms`-style duration works.
+- `apiKeys:create` wants its fields **flat in the POST body**, not wrapped in a
+  `{"values": ...}` envelope, and `role` as an object (`{"name": "member"}`).
+  Get either wrong and the action returns an empty `200` having created
+  nothing — it checks `if (!values.role) return`. The token comes back once, in
+  the response body; it is never readable again.
+- An `environmentVariables` row of type `secret` reads back with an **empty
+  `value`** over the API and is stored encrypted, so neither the API nor the
+  table will tell you what a credential is — only whether it is present.
 - **`ai:listModels` is not authoritative about what a provider will serve.** On
   this box it reports `deepseek-flash` and `deepseek-v4-pro`, while every
   working employee runs `deepseek-v4-flash` — which answers fine and the
