@@ -105,6 +105,45 @@ the ordinary REST API with the root token — there is no `nb` env for this host
   `m.startOf is not a function` before the model is ever called — for every
   employee, which makes it look like the employee is broken.
 
+## Transcription and workflows
+
+Measured on this box while repairing `Meetings: Transcribe Recording`. The
+wiring lives in the database, so none of it is in the playbook — `just
+transcription-workflow` owns it, the same way `just docs-employee` owns Dora.
+
+- **An attachment's `url` is not fetchable without a token.** It reads
+  `/files/main/main/attachments/<id>.<ext>`, the file-manager route, which
+  answers 403 `No permissions` to an anonymous request. The static path
+  `/storage/uploads/<filename>` — the storage row's `baseUrl` plus the
+  attachment's `filename` — is public and is what a plain `fetch()` can read.
+  The transcribe plugin fetches `audioUrl` with no Authorization header, so it
+  can only ever use the latter. This changed under an installation that had
+  been working, and the symptom is a transcript that silently never appears.
+- **Nodes of a workflow version that has executed cannot be reconfigured** —
+  `flow_nodes:update` throws `Nodes in executed workflow could not be
+  reconfigured`. Changing a live workflow means `workflows:revision`, editing
+  the copy, then enabling it. Pass the key in the filter
+  (`workflows:revision?filterByTk=<id>&filter={"key":"<key>"}`): without it you
+  get a detached `"... copy"` with a key of its own instead of a new version.
+- `WorkflowRepository.revision` copies each node with its `key` preserved, which
+  is what keeps `{{$jobsMapByNodeKey.<key>}}` references valid across the copy.
+  Node *ids* are regenerated, so address nodes by title, never by id.
+- **The `workflows` table has no `version` column.** The UI renders "v3" from
+  the row's position in the key chain, so reading `version` back over the API
+  gives `None` for every row. Order by `id`.
+- Enabling a version is what demotes the previous one. Verify afterwards that
+  exactly one row in the chain has `enabled` — two would transcribe everything
+  twice.
+- The script node runs in QuickJS (`@nocobase/plugin-workflow-javascript`) on a
+  default `newContext()`, so the whole ES standard library is there —
+  `encodeURIComponent` included, which real upload names like
+  `Recording (4)-msher8.m4a` need. The script instruction implements no `test`
+  hook, so `flow_nodes:test` 500s on it; there is no way to dry-run one.
+- **whisper costs about 90s per 30-second window of audio, not per second.** A
+  1s clip and an 11s clip both took ~91s. So a timeout has a floor of a minute
+  and a half whatever the input, and the node's stock `60000` could never have
+  transcribed anything at all.
+
 ## nginx
 
 - Reverse proxy only. TLS is terminated by Cloudflare before the tunnel, so

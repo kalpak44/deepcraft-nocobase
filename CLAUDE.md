@@ -59,6 +59,17 @@ just docs-status                # what is indexed; whether the model is loaded
 just logs-docs                  # tail the docs-mcp journal
 ```
 
+The workflow that turns a meeting recording into a transcript is runtime state
+for the same reason, and it addresses the app on loopback — so transcription
+never crosses the Cloudflare tunnel and does not break when the public hostname
+changes, which is how it silently stopped working once already:
+
+```bash
+just transcription-workflow     # point the workflow at this box's whisper
+just transcription-check        # transcribe a sample end to end
+just logs-whisper               # tail the whisper-server journal
+```
+
 Share accounts are managed outside the playbook, because CI applies it on every
 push and would delete anything it declared:
 

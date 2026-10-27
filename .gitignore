@@ -43,3 +43,6 @@ coverage/
 # @nocobase/* dependency tree, whose transitive advisories cannot be fixed
 # without floating the version that must match the box.
 /plugins/*/package-lock.json
+
+# python bytecode, from running the scripts/ helpers locally
+__pycache__/

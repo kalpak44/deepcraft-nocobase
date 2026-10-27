@@ -37,6 +37,19 @@ docs_mcp_port := env_var_or_default("DOCS_MCP_PORT", "8812")
 lex_mcp_bind := env_var_or_default("LEX_MCP_BIND", "127.0.0.1")
 lex_mcp_port := env_var_or_default("LEX_MCP_PORT", "8814")
 
+# Where the app answers on loopback. Must match nocobase_app_port in
+# ansible/roles/nocobase/defaults/main.yml. The transcription recipe below
+# points the workflow at this rather than at the public hostname: that keeps
+# meeting audio off the Cloudflare tunnel, so it does not meet the 100 MB cap
+# and cannot break again the next time the public name changes.
+nocobase_app_url := env_var_or_default("NOCOBASE_APP_URL", "http://127.0.0.1:13000")
+
+# How long the workflow waits for a transcript. whisper decodes at roughly eight
+# times slower than realtime on this box — one thread yielding to NocoBase on two
+# shared cores — so this is minutes, not seconds, and the node's stock 60000
+# could not transcribe more than about seven seconds of audio.
+transcription_timeout_ms := env_var_or_default("TRANSCRIPTION_TIMEOUT_MS", "1800000")
+
 # The supervised browser's takeover page. Both must match
 # ansible/roles/browser/defaults/main.yml — the recipes below manage the
 # accounts in that password file, and the role is what points nginx at it.
@@ -70,6 +83,11 @@ help:
     @echo "  just lexy-employee         register lex-mcp and create/refresh Lexy"
     @echo "  just lexy-status           what the browser has open, and what is blocking it"
     @echo "  just logs-lexy             tail the lex-mcp and playwright-mcp journals"
+    @echo ""
+    @echo "transcription — the workflow that turns a meeting recording into text"
+    @echo "  just transcription-workflow  point the workflow at this box's whisper"
+    @echo "  just transcription-check     transcribe a sample end to end"
+    @echo "  just logs-whisper            tail the whisper-server journal"
     @echo ""
     @echo "browser — who may take over the browser to pass a Cloudflare check"
     @echo "  just browser-users         list the accounts that can open the takeover page"
@@ -727,6 +745,53 @@ logs-lexy mode="": write-ssh-key
     [ "{{mode}}" = "--lan" ] || just connect-warp
     exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
       journalctl -u lex-mcp -u playwright-mcp -f -n 100
+
+# ── Meeting transcription ────────────────────────────────────────────────────
+#
+# whisper-server is deployed by ansible, but the workflow that feeds it lives in
+# the database — runtime state, the same as the employees above, so the setup
+# playbook does not manage it and CI never checks it.
+#
+# That is exactly how it broke twice without anyone noticing: the workflow still
+# pointed at the box's previous public hostname, and separately the attachment
+# URL shape changed from the static /storage/uploads path to the authenticated
+# /files route, which an anonymous fetch cannot read. Both failures look
+# identical from the outside — the transcript simply never appears.
+#
+# The recipe is idempotent and re-runnable, and is how the wiring gets put back
+# after a restore.
+
+# Point the meeting-transcription workflow at this box's own whisper.
+transcription-workflow mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    tar cf - scripts/configure-transcription-workflow.py \
+      | ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" 'set -eu;
+          d=/tmp/transcription-setup; rm -rf "$d"; mkdir -p "$d";
+          tar xf - -C "$d" --warning=no-unknown-keyword;
+          export TRANSCRIPTION_BASE_URL="{{nocobase_app_url}}";
+          export TRANSCRIPTION_TIMEOUT_MS="{{transcription_timeout_ms}}";
+          python3 "$d/scripts/configure-transcription-workflow.py" &&
+          rm -rf "$d"'
+
+# Transcribe a sample through the whole chain and report what came back.
+transcription-check mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" \
+      'curl -sf -m 600 -X POST "http://127.0.0.1:8080/inference" \
+         -F "file=@/data/whisper/samples/jfk.wav" -F "response_format=json" \
+       | python3 -m json.tool || {
+           echo "whisper-server is not answering — try: just logs-whisper" >&2; exit 1; }'
+
+# Tail the whisper-server journal.
+logs-whisper mode="": write-ssh-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{mode}}" = "--lan" ] || just connect-warp
+    exec ssh -i "{{key_file}}" -p "{{port}}" "{{user}}@{{host}}" journalctl -u whisper-server -f -n 100
 
 # ── Browser takeover accounts ────────────────────────────────────────────────
 #
