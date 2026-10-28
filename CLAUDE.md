@@ -75,8 +75,10 @@ just logs-whisper               # tail the whisper-server journal
 The workflow authenticates to its own API with a NocoBase API key. Rotating
 `APP_KEY` silently invalidates it — the 401 says "your session has expired"
 whatever the real cause — so `just transcription-token` is the fix for a
-workflow that has started failing on auth. **whisper reads wav, mp3 and flac
-but not `.m4a`/AAC**, which it rejects with a bare `Invalid request`.
+workflow that has started failing on auth. whisper's decoder reads wav, mp3,
+flac and Ogg-Vorbis only; **`--convert` sends everything else — `.m4a`/AAC,
+webm/Opus, and video (ffmpeg extracts its audio track) — through ffmpeg first**.
+Without it those uploads fail with a bare `Invalid request`.
 
 **Transcriber** is the AI employee side of the same thing — it calls the
 `transcribeAudio` tool rather than hearing anything itself, so the audio never

@@ -6,10 +6,14 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={{ whisper_dir }}
+# --convert writes to a writable tmp-dir, not whisper_dir, which is read-only.
+RuntimeDirectory={{ whisper_runtime_dir }}
 ExecStart={{ whisper_dir }}/build/bin/whisper-server \
   --model {{ whisper_dir }}/models/{{ whisper_model_name }} \
   --language {{ whisper_language }} \
-  --threads {{ whisper_threads }} \
+{% if whisper_convert %}  --convert \
+  --tmp-dir {{ whisper_tmp_dir }} \
+{% endif %}  --threads {{ whisper_threads }} \
   --port {{ whisper_port }} \
   --host {{ whisper_bind }}
 Restart=always
