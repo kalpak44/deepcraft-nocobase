@@ -69,6 +69,11 @@ model is fixed at server startup, no auth), not the OpenAI shape. No API key is 
 Set `transcribe_default_provider` to `whisper` (or pass `"provider": "whisper"` per call/tool
 invocation) and, if your server isn't on the default host/port, `transcribe_whisper_base_url`.
 
+The plugin forwards bytes unchanged, so format support is the server's decision. whisper.cpp's
+decoder reads WAV, MP3, FLAC and Ogg-Vorbis only; run the server with `--convert
+--tmp-dir <writable-dir>` and ffmpeg on PATH to accept everything else (`.m4a`/AAC, webm/Opus,
+video). Without it those uploads fail with HTTP 400 `Invalid request`.
+
 **If NocoBase runs in Docker and the whisper server runs on the host** (the common local-dev
 setup), `127.0.0.1` inside the container is the container's own loopback, not the host's — the
 server needs to be reachable from the container's network. Two ways to fix it:

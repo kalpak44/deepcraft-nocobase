@@ -59,6 +59,18 @@ whisper_threads: 1
 # wrong on a short or noisy opening.
 whisper_language: auto
 
+# Force every upload through ffmpeg before decoding. whisper's built-in decoder
+# reads only WAV, MP3, FLAC and Ogg-Vorbis; --convert lets ffmpeg demux everything
+# else — .m4a/AAC, webm/Opus, and video, whose audio track it extracts. False
+# restores the four-format limit.
+whisper_convert: true
+
+# Must be writable and outside whisper_dir, which is read-only under
+# ProtectSystem=strict. RuntimeDirectory= creates it on tmpfs and removes it on
+# stop; unset makes every converted request fail.
+whisper_runtime_dir: whisper-server
+whisper_tmp_dir: "/run/{{ whisper_runtime_dir }}"
+
 # Deliberately absent: --translate. It would render every language into English
 # instead of transcribing it, which is the opposite of what a multilingual
 # transcript is for. Whisper's own default is off; this comment exists because

@@ -13,6 +13,13 @@
     state: present
     update_cache: true
 
+# --convert shells out to ffmpeg. Install it before the restart: whisper-server
+# exits 0 when it is missing, so systemd only sees Restart=always looping.
+- name: Install ffmpeg for the formats whisper cannot decode
+  ansible.builtin.apt:
+    name: ffmpeg
+    state: present
+
 - name: Create the install directory
   ansible.builtin.file:
     path: "{{ whisper_dir }}"
@@ -105,6 +112,31 @@
       is decoding every recording as English whatever language it is in. That
       shows up as plausible-looking nonsense, not as an error.
     quiet: true
+
+# --convert needs --tmp-dir; the wrong one fails every request, WAV included.
+- name: Fail if the conversion flags did not reach the service
+  ansible.builtin.assert:
+    that:
+      - "'--convert' in _whisper_exec.stdout"
+      - "'--tmp-dir ' ~ whisper_tmp_dir in _whisper_exec.stdout"
+    fail_msg: >-
+      whisper-server is running without --convert and --tmp-dir
+      {{ whisper_tmp_dir }}, so it still rejects .m4a, webm/Opus and every other
+      container its built-in decoder does not read with a bare
+      `Invalid request`.
+    quiet: true
+  when: whisper_convert
+
+# End-to-end proof that unsupported formats decode. The script runs on the box
+# and posts a generated .m4a to /inference; see its header.
+- name: Convert and transcribe the containers whisper cannot read natively
+  ansible.builtin.script:
+    cmd: >-
+      check-formats.py
+      http://{{ whisper_bind }}:{{ whisper_port }}/inference
+      {{ whisper_dir }}/samples/jfk.wav
+  changed_when: false
+  when: whisper_convert
 
 - name: Report where whisper is listening
   ansible.builtin.debug:
