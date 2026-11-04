@@ -57,6 +57,37 @@ location {{ webdav_location }}/ {
     # Without this a PUT into a directory the client has not created yet 409s.
     create_full_put_path on;
 
+    # Windows Explorer finishes every upload with PROPPATCH, to write the Win32
+    # creation time, modification time and file attributes. nginx implements
+    # PROPPATCH nowhere — not in dav, not in dav-ext — so it answers 405, and
+    # Explorer treats a failed PROPPATCH as a failed copy: it DELETEs the file
+    # it has just successfully PUT and reports "Can't read from the source file
+    # or disk", which points at the source and says nothing about the server.
+    # Measured, once per attempt:
+    #     PUT 201 -> LOCK 200 -> PROPPATCH 405 -> DELETE 204
+    #
+    # So answer PROPPATCH with a synthetic 207 claiming the properties were
+    # applied. They are not: nginx has nowhere to put them, so Windows
+    # timestamps and attributes are not preserved on the share. The file itself
+    # is written byte for byte, which is what matters here — and the alternative
+    # is that Windows cannot write to the share at all.
+    #
+    # This `return` runs in the rewrite phase, which is *before* the access
+    # phase where auth_basic lives — see the note in .claude/rules/nocobase.md.
+    # An anonymous PROPPATCH therefore gets the 207 rather than a 401. That is
+    # acceptable only because the response is a fixed string that echoes back
+    # the caller's own URI: it performs no action, touches no file, and reveals
+    # neither the existence nor the contents of anything.
+    # more_set_headers, not add_header: `return` gives the response nginx's
+    # default_type, so add_header leaves *two* Content-Type headers on it —
+    # measured, "application/octet-stream" followed by the one added here. A
+    # client reads the first and sees binary rather than XML. headers-more
+    # replaces instead of appending, which is the whole reason it is installed.
+    if ($request_method = PROPPATCH) {
+        more_set_headers "Content-Type: text/xml; charset=utf-8";
+        return 207 '<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n<D:response>\n<D:href>$request_uri</D:href>\n<D:propstat>\n<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n</D:response>\n</D:multistatus>\n';
+    }
+
     # nginx's MKCOL handler rejects any URI that does not end in "/" with a bare
     # 409, and clients differ on whether they send the slash — measured: without
     # it 409, with it 201. Normalising here is what stops "new folder" failing

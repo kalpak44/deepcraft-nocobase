@@ -149,6 +149,30 @@
       does not support WebDAV" and Windows with "Windows cannot access"
     quiet: true
 
+# Windows deletes its own upload when PROPPATCH fails, so a 405 here means the
+# share is silently read-only to Explorer while looking like it works. 207 is
+# the synthetic answer from the template; see the note there about why it is
+# reached without authentication.
+- name: Verify PROPPATCH is answered rather than refused
+  ansible.builtin.uri:
+    url: "http://127.0.0.1{{ webdav_location }}/"
+    method: PROPPATCH
+    status_code: 207
+    # uri discards the body unless asked for it, and the body is the point:
+    # a 207 carrying nothing is not something Windows will accept.
+    return_content: true
+  register: _webdav_proppatch
+  changed_when: false
+
+- name: Fail if the PROPPATCH answer is not a WebDAV multistatus
+  ansible.builtin.assert:
+    that: "'<D:multistatus' in (_webdav_proppatch.content | default(''))"
+    fail_msg: >-
+      PROPPATCH answered {{ _webdav_proppatch.status | default('?') }} without a
+      multistatus body. Windows reads anything but success as a failed copy and
+      DELETEs the file it has just uploaded
+    quiet: true
+
 # The share must answer, and must answer 401. A 200 here would mean the whole
 # thing is readable without credentials, which is the one failure that would not
 # look like a failure from anywhere else.
